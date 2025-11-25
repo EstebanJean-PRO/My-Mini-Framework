@@ -2,7 +2,7 @@
  * Game Math Utilities - 2D Vector operations and collision detection
  */
 
-import { sqrt, atan2, cos, sin, abs, min, max, random, floor, hypot } from './utils';
+import { atan2, cos, sin, abs, min, max, random, floor, hypot } from './utils';
 
 export class Vector2 {
     constructor(public x: number = 0, public y: number = 0) {}
