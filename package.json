@@ -1,7 +1,7 @@
 {
-  "name": "mini-framework",
+  "name": "my-framework",
   "version": "1.1.0",
-  "description": "Custom JavaScript framework",
+  "description": "Custom TypeScript framework",
   "type": "module",
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",

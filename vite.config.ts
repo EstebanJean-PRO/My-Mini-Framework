@@ -4,8 +4,8 @@ export default defineConfig({
   build: {
     lib: {
       entry: 'src/index.ts',
-      name: 'MyMiniFramework',
-      fileName: 'my-mini-framework'
+      name: 'MyFramework',
+      fileName: 'my-framework'
     }
   }
 })
