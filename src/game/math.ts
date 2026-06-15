@@ -74,6 +74,10 @@ export class Vector2 {
 // Math utilities
 export const clamp = (val: number, mn: number, mx: number): number => min(max(val, mn), mx);
 export const lerp = (start: number, end: number, t: number): number => start + (end - start) * t;
+// BUG (Game P2): divides by (inMax - inMin); returns NaN or ±Infinity when inMin === inMax,
+// silently corrupting any downstream position, scale, or lerp.
+// SOLUTION: guard with `if (inMax === inMin) return outMin;` — outMin is the conventional
+// result for a degenerate (zero-width) input range.
 export const map = (val: number, inMin: number, inMax: number, outMin: number, outMax: number): number =>
     ((val - inMin) * (outMax - outMin)) / (inMax - inMin) + outMin;
 export const degToRad = (deg: number): number => deg * (Math.PI / 180);

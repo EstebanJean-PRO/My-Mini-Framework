@@ -1,7 +1,10 @@
 import { VirtualElement, ElementChild, ElementProps } from '../core/types';
-import { registerEventHandler, removeEventHandler, updateEventHandler } from '../events/handler';
+import { registerEventHandler, removeEventHandler, updateEventHandler, attachDirectListener, removeDirectListener } from '../events/handler';
 import { globalStore } from '../state/store';
 import { generateId } from '../utils/id';
+
+// Liste des événements non-bubbling qui nécessitent un attachement direct
+const NON_BUBBLING_EVENTS = ['scroll', 'resize', 'load', 'focus', 'blur'];
 
 // -------------- Types & Interfaces --------------
 
@@ -17,6 +20,31 @@ interface KeyedChildren {
 // ------------------------------------------------
 
 // -------------- Variables globales --------------
+
+// BUG (Core P1 #4 + #5): four module-level scalars form a single global render context.
+// Calling render() for a second container overwrites lastVirtualDOM and unsubscribe,
+// silently orphaning the first root and corrupting both diffs on the next state change.
+// isRerendering is a re-entrancy hack that only works for a single root.
+//
+// SOLUTION (Observer pattern):
+//   Extract the four scalars into a Renderer class. render() creates an instance,
+//   stores it in a Map<HTMLElement, Renderer>, and returns it.
+//   Each Renderer owns its own lastVirtualDOM, unsubscribes[], isRerendering, and
+//   optionally a paths[] for granular subscribeTo() calls (resolves Core P1 #1 Step 2).
+//   Add destroy() to tear down subscriptions and remove the instance from the Map.
+//
+//   class Renderer {
+//     private lastVirtualDOM: VirtualElement | null = null;
+//     private unsubscribes: Array<() => void> = [];
+//     private isRerendering = false;
+//     constructor(readonly component: ComponentFunction,
+//                 readonly container: HTMLElement,
+//                 readonly paths?: string[]) {}
+//     mount(): void { /* initial render + subscribe */ }
+//     destroy(): void { this.unsubscribes.forEach(u => u()); renderers.delete(this.container); }
+//   }
+//   const renderers = new Map<HTMLElement, Renderer>();
+//   export function render(fn, container, paths?): Renderer { ... }
 
 // Dernier rendu (pour le re-rendering automatique)
 let lastRender: { createComponent: ComponentFunction; container: HTMLElement } | null = null;
@@ -64,8 +92,12 @@ function applySingleProp(element: HTMLElement, key: string, value: any): void {
             element.id = generateId();
         }
         const eventId = registerEventHandler(eventType, value);
-        // Stocker par type d'événement
         element.dataset[`event${eventType.charAt(0).toUpperCase() + eventType.slice(1)}Id`] = eventId;
+
+        // Pour les événements non-bubbling, attacher directement au lieu d'utiliser la délégation
+        if (NON_BUBBLING_EVENTS.includes(eventType)) {
+            attachDirectListener(element, eventType, eventId);
+        }
     } else if (key === 'style' && typeof value === 'object' && value !== null) {
         element.setAttribute('style', styleObjectToString(value as Record<string, string | number>));
     } else if (key === 'class' && Array.isArray(value)) {
@@ -76,6 +108,8 @@ function applySingleProp(element: HTMLElement, key: string, value: any): void {
         } else {
             element.removeAttribute(key);
         }
+    } else if (key === 'value' && (element.tagName === 'INPUT' || element.tagName === 'TEXTAREA' || element.tagName === 'SELECT')) {
+        (element as HTMLInputElement | HTMLTextAreaElement | HTMLSelectElement).value = String(value);
     } else {
         element.setAttribute(key, String(value));
     }
@@ -129,7 +163,7 @@ function rerender(): void {
 }
 
 // Fonction pour comparer et patcher deux Virtual DOM
-function diffAndPatch(domNode: HTMLElement, oldVNode: VirtualElement, newVNode: VirtualElement): void {
+export function diffAndPatch(domNode: HTMLElement, oldVNode: VirtualElement, newVNode: VirtualElement): void {
     // Vérifier si les deux sont mémorisés avec la même clé
     if (oldVNode.__memoized && newVNode.__memoized && 
         oldVNode.__memoKey === newVNode.__memoKey) {
@@ -163,6 +197,11 @@ function diffProps(domNode: HTMLElement, oldProps: ElementProps, newProps: Eleme
                 if (eventId) {
                     removeEventHandler(eventId);
                     delete domNode.dataset[eventIdKey];
+
+                    // Pour les événements non-bubbling, supprimer également le listener direct
+                    if (NON_BUBBLING_EVENTS.includes(eventType)) {
+                        removeDirectListener(domNode, eventType);
+                    }
                 }
             } else {
                 domNode.removeAttribute(key);
@@ -244,11 +283,22 @@ function extractKeyedChildren(children: ElementChild[]): KeyedChildren {
 
 // Diff avec gestion des keys
 function diffChildrenWithKeys(
-    domNode: HTMLElement, 
-    oldKeyed: KeyedChildren, 
+    domNode: HTMLElement,
+    oldKeyed: KeyedChildren,
     newKeyed: KeyedChildren
 ): void {
-    // Créer une map des anciens éléments par key
+    // BUG (Core P1): domIndex is stored at scan time and goes stale after the first
+    // insertBefore; subsequent lookups via childNodes[domIndex] access the wrong node,
+    // causing data corruption on the misidentified node and leaving the real node as a
+    // ghost. The trailing while-loop only removes tail excess, not interspersed ghosts.
+    // SOLUTION: snapshot actual ChildNode references before any mutation, then use refs
+    // directly. After processing new children, explicitly remove any old-keyed nodes
+    // whose key is absent from the new list. Remove the trailing while-loop — it becomes
+    // redundant and unsafe once explicit removal is in place.
+    //   const childSnapshot = Array.from(domNode.childNodes);
+    //   oldKeyMap stores { child, ref: childSnapshot[index] }
+    //   After new-children loop: oldKeyMap.forEach((item, key) => {
+    //     if (!newKeySet.has(key)) item.ref.parentNode?.removeChild(item.ref); });
     const oldKeyMap = new Map<string, { child: ElementChild; domIndex: number }>();
     oldKeyed.withKeys.forEach(({ key, child, index }) => {
         oldKeyMap.set(key, { child, domIndex: index });
@@ -311,7 +361,11 @@ function diffChildrenWithKeys(
 // Fallback sans keys (votre algorithme actuel)
 function diffChildrenByIndex(domNode: HTMLElement, oldChildren: ElementChild[], newChildren: ElementChild[]): void {
     const maxLength = Math.max(oldChildren.length, newChildren.length);
-    
+
+    // BUG (Core P1 #7): childNodes is a live NodeList; removeChild at index i shifts all
+    // subsequent indices, causing the next iteration to skip one node.
+    // SOLUTION: snapshot with Array.from(domNode.childNodes) before the loop and index
+    // into that static array instead of the live NodeList.
     for (let i = 0; i < maxLength; i++) {
         const oldChild = oldChildren[i];
         const newChild = newChildren[i];
@@ -330,17 +384,24 @@ function diffChildrenByIndex(domNode: HTMLElement, oldChildren: ElementChild[], 
     }
 }
 
-// Fonction pour comparer et patcher les enfants
+// REFACTOR (Core P3 — Strategy pattern): keyed vs index diffing is selected by a hardcoded
+// if/else here. diffChildrenWithKeys also handles unkeyed children internally (lines above),
+// blurring the strategy boundary. Adding a third strategy (e.g. LCS-based) requires
+// modifying this function and restructuring diffChildrenWithKeys.
+// SOLUTION: define `type DiffStrategy = (domNode, old, next) => void`; extract
+// `selectStrategy(old, next): DiffStrategy` as a separate function; move unkeyed-child
+// handling out of diffChildrenWithKeys so each strategy owns only its domain. diffChildren
+// becomes a one-liner: `selectStrategy(old, next)(domNode, old, next)`.
 function diffChildren(domNode: HTMLElement, oldChildren: ElementChild[], newChildren: ElementChild[]): void {
     const oldKeyedChildren = extractKeyedChildren(oldChildren);
     const newKeyedChildren = extractKeyedChildren(newChildren);
-    
+
     // Si pas de keys, utiliser l'ancien algorithme simple
     if (oldKeyedChildren.withKeys.length === 0 && newKeyedChildren.withKeys.length === 0) {
         diffChildrenByIndex(domNode, oldChildren, newChildren);
         return;
     }
-    
+
     // Algorithme avec keys
     diffChildrenWithKeys(domNode, oldKeyedChildren, newKeyedChildren);
 }
@@ -390,13 +451,24 @@ export function render(
 
         lastRender = { createComponent: elementOrFunction, container };
 
+        // BUG (Core P1): blanket subscribe fires on every state change, including game-loop
+        // writes, triggering a full VDOM re-render every frame.
+        // SOLUTION (two-step):
+        //   Step 1 (interim) — wrap the callback in an rAF guard so at most one re-render
+        //   fires per frame regardless of how many state mutations the game loop produces.
+        //   Step 2 (final, with Renderer class) — replace subscribe() with per-path
+        //   subscribeTo(path, rerender) calls; the path list is passed to the Renderer
+        //   constructor and held per-instance. Implement alongside Core P1 #4.
         unsubscribe = globalStore.subscribe(() => {
             rerender();
         });
     }
 }
 
-// Fonction pour convertir un VirtualElement en HTMLElement
+// BUG (Core P1 #6): exported as `createElement`, colliding with core/element.ts's
+// `createElement(tag, props, ...children) → VirtualElement`. The explicit named re-export
+// in index.ts wins, so callers get this DOM-materialisation function instead of the VDOM
+// factory. SOLUTION: rename to `createDOMElement` here and update the export in index.ts.
 export function createElement(vElement: VirtualElement): HTMLElement {
     const element = document.createElement(vElement.tag);
     applyProps(element, vElement.props);

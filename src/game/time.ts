@@ -33,6 +33,12 @@ export class Timer {
     }
     lap(): number { const time = this.getElapsed(); this.laps.push(time); return time; }
     getElapsed(): number {
+        // BUG (Game P2): returns 0 as soon as stop() sets running=false. Any post-stop
+        // query of elapsed time (including getRemaining() and getProgress()) gets a
+        // misleading result — duration and 0 respectively.
+        // SOLUTION: add `private _stoppedElapsed = 0`. In stop(), snapshot before
+        // clearing running: `this._stoppedElapsed = this.getElapsed()`. Replace
+        // `return 0` here with `return this._stoppedElapsed`. Reset to 0 in start().
         if (!this.running) return 0;
         const current = this.pausedAt || now();
         return current - this.startTime - this.pausedTotal;
@@ -96,6 +102,14 @@ export class Scheduler {
             if (task.timeoutId === null) return;
 
             if (task.repeat) {
+                // BUG (Game P2): clearInterval cancels the timer but task.remaining is
+                // never updated. resume() restarts with setInterval(fn, task.delay),
+                // discarding any partial progress in the current interval. One-shot tasks
+                // correctly save remaining (lines below); repeat tasks silently do not.
+                // SOLUTION: replace setInterval with chained setTimeout for all tasks.
+                // In pause(): remaining = task.delay - (currentTime - task.startTime) % task.delay.
+                // In resume(): always setTimeout(fn, task.remaining) — uniform for both
+                // one-shot and repeat, no flag needed to distinguish timer type.
                 clearInterval(task.timeoutId);
             } else {
                 clearTimeout(task.timeoutId);

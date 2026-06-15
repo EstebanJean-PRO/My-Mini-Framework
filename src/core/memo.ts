@@ -1,3 +1,7 @@
+// BUG (Core P4 — unused import): VirtualElement is imported but never used as a type;
+// the VirtualElement check at line ~36 uses duck typing (`'tag' in result`) instead.
+// SOLUTION: remove this import; replace the duck-type check with `instanceof`-safe
+// narrowing or import the type only when/if it is used explicitly.
 import { VirtualElement } from "./types";
 import { shallowEqual } from "../utils/equality";
 
@@ -8,13 +12,20 @@ interface MemoizedFunction<R = any> {
     func: (...args: any[]) => R;
 }
 
-// Cache pour les fonctions mémoïsées (générique)
+// BUG (Core P2): plain Map holds strong references to every function ever passed to
+// memo(); entries are never evicted, preventing GC of unmounted components' functions.
+// SOLUTION: replace with WeakMap — same API, entry lifetime tied to the function key.
+// Consistent with reactiveComponentCache and handlerCache already using WeakMap below.
 const memoCache = new Map<Function, MemoizedFunction>();
 // Cache pour les composants réactifs
 const reactiveComponentCache = new WeakMap<Function, { lastProps: any; lastResult: any }>();
 
 // Cache pour les gestionnaires d'événements mémoïsés
 const handlerCache = new WeakMap<Function, { deps: any[], handler: Function }>();
+// BUG (Core P4 — dead code): handlerIdCounter and handlerIds are written inside useCallback
+// but never read anywhere. The apparent intent (stable numeric IDs for handler.ts's
+// registry) was never connected — handler.ts uses its own generateId() system.
+// SOLUTION: delete both declarations and the three write lines in useCallback (lines 69–71).
 let handlerIdCounter = 0;
 const handlerIds = new WeakMap<Function, number>();
 
@@ -73,7 +84,13 @@ export function useCallback<T extends Function>(
     return callback;
 }
 
-// Mémoisation pour ReactiveComponent
+// BUG (Core P4): `return cached.lastResult` inside a constructor returns a stale
+// ReactiveComponent instance — which may be unmounted, have dead store subscriptions,
+// or be in an inconsistent lifecycle state. The cache key is `componentClass` itself,
+// so only one instance is ever returned per class regardless of args (accidental singleton).
+// SOLUTION: delete this function. ReactiveComponent is stateful; constructor-level
+// memoization is unsound. The correct level is render() output — wrap the class's
+// render() method with memo() to memoize VirtualElement results instead of instances.
 export function memoizeReactiveComponent<T extends any[]>(
     componentClass: new (...args: T) => any,
     areEqual?: (prevArgs: T, nextArgs: T) => boolean

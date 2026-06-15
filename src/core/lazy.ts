@@ -17,6 +17,12 @@ export type LazyModuleLoader<T = any> = () => Promise<{ default: T } | T>;
 
 export enum LoadingState { IDLE = 'idle', LOADING = 'loading', LOADED = 'loaded', ERROR = 'error', TIMEOUT = 'timeout' }
 
+// BUG (Core P4): fallback is typed as ElementProps, which has no `tag` or `children`.
+// SuspenseBoundary.render() reads fallback.tag and fallback.children — both are
+// undefined at runtime, so every fallback renders as a bare <div>. TypeScript misses
+// this because ElementProps has a [key: string]: any index signature.
+// SOLUTION: change fallback to VirtualElement. The || 'div' guards in render() become
+// optional runtime safety. Call sites already pass { tag, props, children } objects.
 export interface SuspenseProps {
     fallback: ElementProps;
     children: VirtualElement | VirtualElement[];
@@ -57,6 +63,21 @@ export function configureLazy(config: Partial<LazyConfig>): void {
 
 // =================== LAZY COMPONENTS ===================
 
+// REFACTOR (Core P3 — State pattern): LoadingState drives 13+ raw `this.state = X`
+// assignments across LazyComponent, LazyReactiveComponent, SuspenseBoundary, and
+// LazyRouterExtension with no transition validation. Line 135 mutates state mid-render,
+// risking re-render loops. Any code can assign any state from any state silently.
+// SOLUTION: replace scattered assignments with a guarded transition(to) method backed by
+// an explicit VALID_TRANSITIONS table. Throws on invalid transitions (dev safety), making
+// the state machine explicit and auditable without restructuring all classes.
+//   private static VALID_TRANSITIONS: Record<LoadingState, LoadingState[]> = {
+//     [LoadingState.IDLE]:    [LoadingState.LOADING],
+//     [LoadingState.LOADING]: [LoadingState.LOADED, LoadingState.ERROR, LoadingState.TIMEOUT],
+//     [LoadingState.LOADED]:  [],
+//     [LoadingState.ERROR]:   [LoadingState.IDLE],
+//     [LoadingState.TIMEOUT]: [LoadingState.IDLE],
+//   };
+//   private transition(to: LoadingState): void { /* validate + assign */ }
 export class LazyComponent<P = any> {
     private loadPromise: Promise<Component<P>> | null = null;
     private loadedComponent: Component<P> | null = null;
@@ -125,6 +146,14 @@ export class LazyComponent<P = any> {
 
         switch (state) {
             case LoadingState.IDLE:
+                // BUG (Core P4): .catch(() => {}) discards all errors silently. On failure,
+                // state transitions to ERROR and this.error is populated (lines 127-128), but
+                // no re-render is scheduled — the component stays on the loading fallback
+                // forever. options.onError is never rendered; the error is invisible.
+                // SOLUTION: add `onLoadError?: (err: Error) => void` to the constructor options.
+                // Replace .catch(() => {}) with .catch(err => this.options?.onLoadError?.(err)).
+                // LazyReactiveComponent passes () => this.render() or a store notification;
+                // standalone callers opt in. No coupling to the rendering system.
                 this.load().catch(() => {});
                 return { tag: fallbackEl.tag || 'div', props: fallbackEl.props || {}, children: fallbackEl.children || [] };
             case LoadingState.LOADING:
@@ -225,6 +254,17 @@ export class LazyReactiveComponent<P = any> extends ReactiveComponent {
         }, cleanupDelay);
     }
 
+    // BUG (Core P4): scheduleCleanup() is called on every render (line 199 in renderWithState),
+    // unconditionally cancelling and re-scheduling a 5-minute setTimeout. At 60 renders/sec
+    // this fires clearTimeout + setTimeout 120 times/sec — the timer can never expire while
+    // the component is active.
+    // SOLUTION: remove the scheduleCleanup() call from renderWithState; renderWithState already
+    // updates lastAccessTime (line 198) which is sufficient. Make setupAutoCleanup self-reschedule:
+    //   this.cleanupTimer = window.setTimeout(() => {
+    //     if (Date.now() - this.lastAccessTime > delay) { this.cleanup(); }
+    //     else { this.setupAutoCleanup(delay); }
+    //   }, delay);
+    // One timer in flight at all times; zero per-render timer API calls.
     private scheduleCleanup(): void {
         if (this.cleanupTimer) {
             clearTimeout(this.cleanupTimer);
@@ -238,7 +278,13 @@ export class LazyReactiveComponent<P = any> extends ReactiveComponent {
             this.cleanupTimer = null;
         }
 
-        // Clear loaded component from memory if not used recently
+        // BUG (Core P4): `as any` casts below directly mutate three private fields of
+        // LazyComponent (loadedComponent, memoizedComponent, state), bypassing access
+        // control. Any invariants LazyComponent holds over these fields (especially state,
+        // which P3's State Machine would guard) are silently violated from outside.
+        // SOLUTION: add `reset(): void` to LazyComponent that performs this mutation
+        // internally. cleanup() then calls `this.lazyComponent.reset()`. Forward-compatible
+        // with P3: reset() becomes a transition(LoadingState.IDLE) call.
         if (this.lazyComponent.isLoaded() && Date.now() - this.lastAccessTime > 300000) {
             (this.lazyComponent as any).loadedComponent = null;
             (this.lazyComponent as any).memoizedComponent = null;
@@ -332,6 +378,12 @@ export class SuspenseBoundary {
 
 // ==================== CODE SPLITTING ====================
 
+// REFACTOR (Core P3 — Template Method): the attemptLoad retry loop is duplicated verbatim
+// in LazyComponent.load() and here. Both have a local `attempts` counter, recursive inner
+// function, and retry-or-reject branch; only timeout logic and post-success bookkeeping
+// differ. SOLUTION: extract `loadWithRetry<T>(loader, opts): Promise<T>` — a single
+// function that owns the counter + retry loop; callers chain .then() for their own
+// post-load work (memoization, module caching). Timeout is an optional opts field.
 export async function dynamicImport<T = any>(importFn: () => Promise<T>, options?: { id?: string; retryAttempts?: number }): Promise<T> {
     const memoizedImportFn = useCallback(importFn, []);
     if (options?.id) {
@@ -361,10 +413,21 @@ export async function dynamicImport<T = any>(importFn: () => Promise<T>, options
         attemptLoad();
     });
 
+    // BUG (Core P4 — Bug A): moduleCache.set stores the unresolved Promise here, making
+    // moduleCache return Promises during in-flight loads. The loadingPromises check on
+    // line 360 becomes unreachable since moduleCache always matches first.
+    // SOLUTION: remove moduleCache.set from this line; let loadingPromises handle
+    // in-flight deduplication and let line 370 populate moduleCache only after resolution.
     if (options?.id) { loadingPromises.set(options.id, promise); moduleCache.set(options.id, promise); }
     return promise;
 }
 
+// BUG (Core P4 — Bug B): generateId() generates a fresh random key on every call, so the
+// same loader is never found in cache and is invoked multiple times with no deduplication.
+// SOLUTION: replace with a WeakMap<Function, Promise> keyed by the loader reference:
+//   const preloadCache = new WeakMap<() => Promise<any>, Promise<any>>();
+//   if (preloadCache.has(loader)) return preloadCache.get(loader) as Promise<T>;
+//   const p = dynamicImport(loader); preloadCache.set(loader, p); return p;
 export function preload<T = any>(loader: () => Promise<T>): Promise<T> {
     return dynamicImport(loader, { id: generateId() });
 }
@@ -400,6 +463,12 @@ export class LoadingManager {
 
 // ==================== ROUTER EXTENSIONS ====================
 
+// REFACTOR (Core P3 — Facade): LazyRouterExtension maintains its own lazyRoutes[] and
+// preloadedComponents Map, entirely separate from the module-level Maps in router/lazy.ts.
+// A route registered via registerLazyRoute() is invisible here; a component preloaded via
+// router/lazy.ts's preloadRoute() will be re-fetched by navigateToLazy() below.
+// SOLUTION: the Router Facade (Core P3 #2) absorbs both — it owns the single registry
+// and single preload cache; LazyRouterExtension becomes redundant and should be deleted.
 export class LazyRouterExtension {
     private lazyRoutes: LazyRoute[] = [];
     private currentLoadingState: LoadingState = LoadingState.IDLE;
@@ -490,6 +559,14 @@ export function createMemoizedLazyComponent<P = any>(
     return component;
 }
 
+// BUG (Core P4): `props.children` is typed as `VirtualElement | VirtualElement[]`;
+// VirtualElement is a plain object, never a LazyComponent instance, so `instanceof
+// LazyComponent` always returns false — lazyChildren is always empty, addPromise is never
+// called, and the boundary never leaves IDLE. The fallback is never shown.
+// SOLUTION: widen SuspenseProps.children to `LazyComponent | LazyComponent[] | VirtualElement
+// | VirtualElement[]`, then the instanceof check works. Also fixes Core P4 #13:
+// SuspenseProps.fallback must be changed from ElementProps to VirtualElement at the same time
+// (fallback.tag is always undefined with ElementProps, rendering a bare <div>).
 export function Suspense(props: SuspenseProps): Component {
     const boundary = new SuspenseBoundary(props);
     return (): VirtualElement => {
@@ -501,6 +578,16 @@ export function Suspense(props: SuspenseProps): Component {
     };
 }
 
+// BUG (Core P4): memoizedWrappedComponent(props) on the next line pre-renders the child
+// to a VirtualElement before Suspense sees it. Suspense receives a static snapshot, not
+// a LazyComponent — addPromise is never called, the boundary stays IDLE, and the fallback
+// is never shown. The `{}` passed to suspenseComponent({}) is also harmless noise (the
+// thunk ignores arguments), not the root cause as CLAUDE.md states.
+// SOLUTION: wrap WrappedComponent in a LazyComponent so Suspense drives the loading cycle:
+//   const lazyChild = new LazyComponent(async () => WrappedComponent);
+//   const suspenseComponent = Suspense({ ...suspenseProps, children: lazyChild });
+//   return suspenseComponent(props);
+// Requires P4 #1 type fix (SuspenseProps.children widened to accept LazyComponent).
 export function withSuspense<P = any>(WrappedComponent: Component<P>, suspenseProps: Omit<SuspenseProps, 'children'>): Component<P> {
     const memoizedWrappedComponent = memo(WrappedComponent);
     return memo((props: P) => {

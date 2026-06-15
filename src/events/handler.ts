@@ -37,15 +37,22 @@ export interface SyntheticEvent {
 
 // Registre global des handlers
 const eventRegistry = new Map<string, EventHandler>();
+// Registre des listeners directs pour événements non-bubbling (Map<elementId, Map<eventType, listener>>)
+const directListeners = new Map<string, Map<string, EventListener>>();
 let isInitialized = false;
 
 // Liste des types d'événements supportés
-const SUPPORTED_EVENTS = [
+const BUBBLING_EVENTS = [
     'click', 'dblclick', 'mousedown', 'mouseup', 'mouseover', 'mouseout',
-    'input', 'change', 'submit', 'reset', 'focus', 'blur',
-    'keydown', 'keyup', 'keypress',
-    'scroll', 'resize', 'load'
+    'input', 'change', 'submit', 'reset',
+    'keydown', 'keyup', 'keypress'
 ];
+
+const NON_BUBBLING_EVENTS = [
+    'scroll', 'resize', 'load', 'focus', 'blur'
+];
+
+const SUPPORTED_EVENTS = [...BUBBLING_EVENTS, ...NON_BUBBLING_EVENTS];
 
 // ==================== EVENT POOLING SYSTEM ====================
 
@@ -103,6 +110,9 @@ function releaseSyntheticEvent(syntheticEvent: SyntheticEvent): void {
 
     if (pool.length < POOL_CONFIG.maxPoolSize) {
         // Clean references
+        // BUG (Core P2): `release` is not cleared here; a second call to event.release()
+        // pushes the same object into the pool twice, allowing two handlers to receive it
+        // simultaneously. SOLUTION: add `release: () => {}` to this Object.assign block.
         Object.assign(syntheticEvent, {
             target: null,
             currentTarget: null,
@@ -146,8 +156,8 @@ export function initializeEventSystem(): void {
     // Initialiser les pools d'événements
     initializePools();
 
-    // Ajouter un écouteur global pour tous les événements supportés
-    SUPPORTED_EVENTS.forEach(eventType => {
+    // Ajouter un écouteur global seulement pour les événements bubbling
+    BUBBLING_EVENTS.forEach(eventType => {
         document.addEventListener(eventType, dispatchEvent);
     });
 
@@ -181,6 +191,55 @@ export function updateEventHandler(eventId: string, newHandler: (event: Syntheti
     }
 }
 
+// Attacher un listener direct pour événements non-bubbling
+export function attachDirectListener(element: HTMLElement, eventType: string, eventId: string): void {
+    const elementId = element.id;
+    if (!elementId) return;
+
+    const listener = (event: Event) => {
+        const handler = eventRegistry.get(eventId);
+        if (handler?.eventType === eventType) {
+            const syntheticEvent = POOL_CONFIG.enablePooling ? createSyntheticEvent(event) : null;
+            handler.handler(syntheticEvent || event);
+            if (syntheticEvent) {
+                setTimeout(() => syntheticEvent.release?.(), 0);
+            }
+        }
+    };
+
+    if (!directListeners.has(elementId)) {
+        directListeners.set(elementId, new Map());
+    }
+
+    const elementListeners = directListeners.get(elementId)!;
+    const oldListener = elementListeners.get(eventType);
+    if (oldListener) {
+        element.removeEventListener(eventType, oldListener);
+    }
+
+    element.addEventListener(eventType, listener);
+    elementListeners.set(eventType, listener);
+}
+
+// Supprimer un listener direct
+export function removeDirectListener(element: HTMLElement, eventType: string): void {
+    const elementId = element.id;
+    if (!elementId) return;
+
+    const elementListeners = directListeners.get(elementId);
+    if (!elementListeners) return;
+
+    const listener = elementListeners.get(eventType);
+    if (listener) {
+        element.removeEventListener(eventType, listener);
+        elementListeners.delete(eventType);
+
+        if (elementListeners.size === 0) {
+            directListeners.delete(elementId);
+        }
+    }
+}
+
 // Helper pour supprimer tous les événements d'un élément
 export function removeElementEventHandlers(element: HTMLElement): void {
     for (const key in element.dataset) {
@@ -189,6 +248,17 @@ export function removeElementEventHandlers(element: HTMLElement): void {
             if (eventId && eventRegistry.has(eventId)) {
                 removeEventHandler(eventId);
             }
+        }
+    }
+
+    // Supprimer également tous les listeners directs pour cet élément
+    if (element.id) {
+        const elementListeners = directListeners.get(element.id);
+        if (elementListeners) {
+            elementListeners.forEach((listener, eventType) => {
+                element.removeEventListener(eventType, listener);
+            });
+            directListeners.delete(element.id);
         }
     }
 }
@@ -216,6 +286,15 @@ function dispatchEvent(event: Event): void {
     }
 }
 
+// BUG (Core P4 #8 + #11): dispatchEventManualRelease and setEventReleaseMode below are
+// dead code — setEventReleaseMode is exported but never called anywhere in the codebase.
+// The "manual release" concept (caller controls SyntheticEvent pool return) is incomplete:
+// no API exists for callers to invoke release() outside the dispatch cycle.
+// Additionally (#11), setEventReleaseMode iterates SUPPORTED_EVENTS which includes
+// non-bubbling events (scroll, focus, blur) and adds them to document — they will never
+// fire there, creating a silent dead dispatch path.
+// SOLUTION: delete both functions. Auto-release via setTimeout already works. If manual
+// release is ever needed, design it from scratch restricted to BUBBLING_EVENTS only.
 const dispatchEventManualRelease = (event: Event) => {
     let target = event.target as HTMLElement;
     while (target) {

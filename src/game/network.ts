@@ -10,21 +10,11 @@ import { min } from './utils';
 // TYPES
 // ============================================================================
 
-export type NetworkMessageType =
-    | 'JOIN'
-    | 'LEAVE'
-    | 'STATE_UPDATE'
-    | 'INPUT'
-    | 'PING'
-    | 'PONG'
-    | 'ACK'
-    | 'CUSTOM';
-
 export type ConnectionState = 'disconnected' | 'connecting' | 'connected' | 'error';
 
 export interface NetworkMessage<T = any> {
     id: string;
-    type: NetworkMessageType;
+    type: string;
     data: T;
     timestamp: number;
     priority?: number;
@@ -127,6 +117,10 @@ export class NetworkClient {
     }
 
     disconnect(): void {
+        // BUG (Game P2): mutates the caller's options object. Reusing the same options
+        // for a subsequent connect() silently disables auto-reconnect permanently.
+        // SOLUTION: shallow-copy options in the constructor (`this.options = { ...options }`)
+        // so all internal mutations stay on the private copy.
         this.options.autoReconnect = false;
         if (this.reconnectTimer !== null) {
             clearTimeout(this.reconnectTimer);
@@ -140,7 +134,7 @@ export class NetworkClient {
         this.state = 'disconnected';
     }
 
-    send<T = any>(type: NetworkMessageType, data: T, priority = 0, requiresAck = false): string {
+    send<T = any>(type: string, data: T, priority = 0, requiresAck = false): string {
         const message: NetworkMessage<T> = {
             id: this.generateMessageId(),
             type,
@@ -218,7 +212,7 @@ export class NetworkClient {
         this.pingTimer = window.setInterval(() => {
             if (this.lastPingTime === 0) {
                 this.lastPingTime = timestamp();
-                this.send('PING', {}, 10);
+                this.send('ping', {}, 10);
             }
         }, interval);
     }
@@ -274,6 +268,13 @@ export class NetworkClient {
         this.messageQueue = [];
     }
 
+    // BUG (Game P2): pending.timestamp is never updated after a retry. Every subsequent
+    // call to retryPendingAcks() immediately re-sends the same messages — unlimited
+    // retries at the caller's poll rate, with no backoff and no retry cap.
+    // SOLUTION: add `retryCount: number` and `nextRetryAt: number` to the pending ack
+    // structure. On retry: retryCount++; nextRetryAt = now + baseDelay * 2^retryCount.
+    // Guard with `now >= pending.nextRetryAt`. After a max retry count, delete the entry
+    // from pendingAcks and surface the error via a configurable onAckTimeout callback.
     retryPendingAcks(maxAge = 5000): number {
         let retried = 0;
         const now = timestamp();
@@ -293,7 +294,7 @@ export class NetworkClient {
 
 export class NetworkManager {
     private client: NetworkClient | null = null;
-    private messageHandlers = new Map<NetworkMessageType, Set<(message: NetworkMessage) => void>>();
+    private messageHandlers = new Map<string, Set<(message: NetworkMessage) => void>>();
 
     connect(options: NetworkClientOptions): void {
         if (this.client) {
@@ -318,18 +319,18 @@ export class NetworkManager {
         }
     }
 
-    send<T = any>(type: NetworkMessageType, data: T, priority = 0, requiresAck = false): string | null {
+    send<T = any>(type: string, data: T, priority = 0, requiresAck = false): string | null {
         return this.client ? this.client.send(type, data, priority, requiresAck) : null;
     }
 
-    on(type: NetworkMessageType, handler: (message: NetworkMessage) => void): void {
+    on(type: string, handler: (message: NetworkMessage) => void): void {
         if (!this.messageHandlers.has(type)) {
             this.messageHandlers.set(type, new Set());
         }
         this.messageHandlers.get(type)!.add(handler);
     }
 
-    off(type: NetworkMessageType, handler: (message: NetworkMessage) => void): void {
+    off(type: string, handler: (message: NetworkMessage) => void): void {
         const handlers = this.messageHandlers.get(type);
         if (handlers) {
             handlers.delete(handler);

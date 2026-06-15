@@ -4,15 +4,26 @@
   "description": "Custom TypeScript framework",
   "type": "module",
   "main": "./dist/index.js",
+  "exports": {
+    ".": {
+      "import": "./dist/my-framework.js",
+      "require": "./dist/my-framework.cjs"
+    },
+    "./game": {
+      "import": "./dist/my-framework-game.js",
+      "require": "./dist/my-framework-game.cjs"
+    }
+  },
   "types": "./dist/index.d.ts",
   "scripts": {
-    "build": "tsc && vite build",
+    "build": "vite build",
     "preview": "vite preview",
     "dev": "vite test --config vite.test.config.ts",
     "todomvc": "vite examples/todomvc --config vite.todomvc.config.ts"
   },
   "devDependencies": {
     "typescript": "^5.0.0",
-    "vite": "^7.1.6"
+    "vite": "^7.1.6",
+    "vite-plugin-dts": "^4.5.4"
   }
 }

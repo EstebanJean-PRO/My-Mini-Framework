@@ -5,7 +5,7 @@
 
 import { Vector2 } from './math';
 
-type InputState = { down: boolean; pressed: boolean; released: boolean };
+export type InputState = { down: boolean; pressed: boolean; released: boolean };
 type InputSnapshot = { keys: Set<string>; mouseButtons: boolean[]; mousePos: Vector2; gamepads: GamepadSnapshot[]; touches: TouchSnapshot[] };
 type GamepadSnapshot = { buttons: boolean[]; axes: number[] };
 type TouchSnapshot = { id: number; pos: Vector2 };
@@ -50,7 +50,7 @@ export class InputManager {
     private normalizeKey(key: string): string { return key === ' ' ? 'space' : key.toLowerCase(); }
     private onKeyDown = (e: KeyboardEvent): void => {
         const key = this.normalizeKey(e.key), state = this.getOrCreate(key);
-        if (!state.down) state.pressed = true;
+        if (!state.down) state.pressed = true; // Only trigger pressed on initial keydown, not repeats
         state.down = true;
     };
     private onKeyUp = (e: KeyboardEvent): void => {
@@ -60,6 +60,7 @@ export class InputManager {
     };
     private onMouseDown = (e: MouseEvent): void => {
         if (e.button < 3) {
+            e.preventDefault();
             const state = this.mouse.buttons[e.button];
             if (!state.down) state.pressed = true;
             state.down = true;
@@ -67,6 +68,7 @@ export class InputManager {
     };
     private onMouseUp = (e: MouseEvent): void => {
         if (e.button < 3) {
+            e.preventDefault();
             this.mouse.buttons[e.button].down = false;
             this.mouse.buttons[e.button].released = true;
         }
@@ -100,6 +102,15 @@ export class InputManager {
         }
     };
 
+    // BUG (Game P1): all listeners attach to `document` globally, and onMouseDown,
+    // onMouseUp, and all touch handlers call e.preventDefault() unconditionally. This
+    // blocks text selection, context menus, and native touch scrolling across the entire
+    // page. Touch events also use { passive: false }, disabling scroll optimisations
+    // globally.
+    // SOLUTION: accept a `target: HTMLElement` constructor parameter (e.g. the canvas).
+    // Attach all listeners to target instead of document. preventDefault on the canvas
+    // is correct game behaviour; the rest of the DOM is then untouched. Default to
+    // document for backwards compatibility if no target is provided.
     constructor() {
         document.addEventListener('keydown', this.onKeyDown);
         document.addEventListener('keyup', this.onKeyUp);
@@ -177,18 +188,46 @@ export class InputManager {
         }
     }
 
-    isKeyDown(key: string): boolean { return this.keys.get(key.toLowerCase())?.down ?? false; }
-    isKeyPressed(key: string): boolean { return this.keys.get(key.toLowerCase())?.pressed ?? false; }
-    isKeyReleased(key: string): boolean { return this.keys.get(key.toLowerCase())?.released ?? false; }
+    /**
+     * Map an action to input bindings.
+     * Supports keyboard keys, mouse buttons, and gamepad buttons:
+     * - Keyboard: any key name (e.g., "space", "w", "shift")
+     * - Mouse: "mouse:0" (left), "mouse:1" (middle), "mouse:2" (right)
+     * - Gamepad: "gamepad:index:button" (e.g., "gamepad:0:0" for first gamepad's A button)
+     */
+    mapAction(name: string, bindings: string[]): void { this.actions.set(name, bindings.map(b => this.normalizeKey(b))); }
+    private checkBinding(binding: string, check: 'down' | 'pressed' | 'released'): boolean {
+        if (binding.startsWith('mouse:')) {
+            const btn = parseInt(binding.slice(6), 10);
+            if (check === 'down') return this.isMouseButtonDown(btn);
+            if (check === 'pressed') return this.isMouseButtonPressed(btn);
+            return this.isMouseButtonReleased(btn);
+        }
+        if (binding.startsWith('gamepad:')) {
+            const [, gpIdx, btnIdx] = binding.split(':');
+            const gamepadIndex = parseInt(gpIdx, 10);
+            const button = parseInt(btnIdx, 10);
+            if (check === 'down') return this.isGamepadButtonDown(gamepadIndex, button);
+            if (check === 'pressed') return this.isGamepadButtonPressed(gamepadIndex, button);
+            return this.isGamepadButtonReleased(gamepadIndex, button);
+        }
+        // Default: keyboard key
+        if (check === 'down') return this.isKeyDown(binding);
+        if (check === 'pressed') return this.isKeyPressed(binding);
+        return this.isKeyReleased(binding);
+    }
+
+    isKeyDown(key: string): boolean { return this.keys.get(this.normalizeKey(key))?.down ?? false; }
+    isKeyPressed(key: string): boolean { return this.keys.get(this.normalizeKey(key))?.pressed ?? false; }
+    isKeyReleased(key: string): boolean { return this.keys.get(this.normalizeKey(key))?.released ?? false; }
     getMousePosition(): Vector2 { return this.mouse.pos.clone(); }
     getMouseDelta(): Vector2 { return this.mouse.delta.clone(); }
     isMouseButtonDown(btn: number): boolean { return this.mouse.buttons[btn]?.down ?? false; }
     isMouseButtonPressed(btn: number): boolean { return this.mouse.buttons[btn]?.pressed ?? false; }
     isMouseButtonReleased(btn: number): boolean { return this.mouse.buttons[btn]?.released ?? false; }
-    mapAction(name: string, keys: string[]): void { this.actions.set(name, keys.map(k => k.toLowerCase())); }
-    isActionDown(name: string): boolean { return this.actions.get(name)?.some(k => this.isKeyDown(k)) ?? false; }
-    isActionPressed(name: string): boolean { return this.actions.get(name)?.some(k => this.isKeyPressed(k)) ?? false; }
-    isActionReleased(name: string): boolean { return this.actions.get(name)?.some(k => this.isKeyReleased(k)) ?? false; }
+    isActionDown(name: string): boolean { return this.actions.get(name)?.some(b => this.checkBinding(b, 'down')) ?? false; }
+    isActionPressed(name: string): boolean { return this.actions.get(name)?.some(b => this.checkBinding(b, 'pressed')) ?? false; }
+    isActionReleased(name: string): boolean { return this.actions.get(name)?.some(b => this.checkBinding(b, 'released')) ?? false; }
     getAxis(axis: 'horizontal' | 'vertical'): number {
         if (axis === 'horizontal') {
             const right = this.axisKeys.right.some(k => this.isKeyDown(k)) ? 1 : 0;
@@ -247,6 +286,38 @@ export class InputManager {
     // Dead zone configuration
     setDeadZones(config: Partial<DeadZoneConfig>): void { Object.assign(this.deadZones, config); }
     getDeadZones(): DeadZoneConfig { return { ...this.deadZones }; }
+
+    // Debug utilities - get all 3 states at once
+    getKeyState(key: string): InputState {
+        const s = this.keys.get(this.normalizeKey(key));
+        return s ? { ...s } : { down: false, pressed: false, released: false };
+    }
+    getMouseButtonState(btn: number): InputState {
+        const s = this.mouse.buttons[btn];
+        return s ? { ...s } : { down: false, pressed: false, released: false };
+    }
+    getActionState(name: string): InputState {
+        const bindings = this.actions.get(name);
+        if (!bindings) return { down: false, pressed: false, released: false };
+        return {
+            down: bindings.some(b => this.checkBinding(b, 'down')),
+            pressed: bindings.some(b => this.checkBinding(b, 'pressed')),
+            released: bindings.some(b => this.checkBinding(b, 'released'))
+        };
+    }
+
+    /** Debug: logs all current key states to console. Call this in your game loop to diagnose issues. */
+    debugLog(): void {
+        const active: string[] = [];
+        this.keys.forEach((state, key) => {
+            const flags: string[] = [];
+            if (state.pressed) flags.push('PRESSED');
+            if (state.down) flags.push('down');
+            if (state.released) flags.push('RELEASED');
+            if (flags.length) active.push(`${key}:[${flags.join(',')}]`);
+        });
+        if (active.length) console.log('[InputManager]', active.join(' | '));
+    }
 
     clear(): void {
         this.keys.clear();

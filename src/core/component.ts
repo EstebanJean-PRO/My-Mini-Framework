@@ -1,6 +1,6 @@
 import { globalStore } from '../state/store';
 import { VirtualElement } from './types';
-import { createElement } from '../dom/render';
+import { createElement, diffAndPatch } from '../dom/render';
 import { deepEqual } from '../utils/equality';
 
 export interface ComponentLifecycle {
@@ -14,6 +14,7 @@ export class ReactiveComponent implements ComponentLifecycle {
     private container: HTMLElement | null = null;
     private props: any;
     private isMounted = false;
+    private lastVirtualDOM: VirtualElement | null = null;
     
     constructor(
         private statePaths: string[],
@@ -38,11 +39,12 @@ export class ReactiveComponent implements ComponentLifecycle {
     
     unmount(): void {
         if (!this.isMounted) return;
-        
+
         this.subscriptions.forEach(unsub => unsub());
         this.subscriptions = [];
         this.container = null;
         this.isMounted = false;
+        this.lastVirtualDOM = null;
     }
     
     update(newProps: any): void {
@@ -65,6 +67,15 @@ export class ReactiveComponent implements ComponentLifecycle {
             
             const unsubscribe = globalStore.subscribeTo(path, (newValue: any) => {
                 if (this.isMounted) {
+                    // BUG (Core P4): when shouldUpdate returns false (skip render), line 79
+                    // below still advances lastValue to the skipped value. On the next change,
+                    // shouldUpdate receives a lastValue that was never rendered, breaking its
+                    // contract ("compare new vs last *rendered* value"). The duplicate
+                    // assignment on line 72 is a symptom of the same confusion.
+                    // SOLUTION: remove the unconditional lastValue = newValue below; move it
+                    // into each branch only where a render actually occurs:
+                    //   if (shouldUpdate(newValue, lastValue, path)) { lastValue = newValue; render(); }
+                    //   else branch: { lastValue = newValue; render(); }
                     if (this.shouldUpdate) {
                         if (this.shouldUpdate(newValue, lastValue, path)) {
                             lastValue = newValue;
@@ -83,11 +94,27 @@ export class ReactiveComponent implements ComponentLifecycle {
     
     private render(): void {
         if (!this.container || !this.isMounted) return;
-        
+
         try {
             const vdom = this.renderFn(this.props);
-            this.container.innerHTML = '';
-            this.container.appendChild(createElement(vdom));
+
+            if (this.lastVirtualDOM) {
+                // Use virtual DOM diffing to preserve existing elements
+                const existingElement = this.container.firstElementChild as HTMLElement;
+                if (existingElement) {
+                    diffAndPatch(existingElement, this.lastVirtualDOM, vdom);
+                } else {
+                    // No existing element, do full render
+                    this.container.innerHTML = '';
+                    this.container.appendChild(createElement(vdom));
+                }
+            } else {
+                // First render
+                this.container.innerHTML = '';
+                this.container.appendChild(createElement(vdom));
+            }
+
+            this.lastVirtualDOM = vdom;
         } catch (error) {
             console.error('Error rendering component:', error);
         }

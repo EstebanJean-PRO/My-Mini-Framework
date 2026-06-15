@@ -1,4 +1,10 @@
-// Fonction de base pour la comparaison avec paramètre de profondeur
+// BUG (Core P2): no circular-reference guard (infinite recursion on self-referencing
+// objects) and no special-type handling — Date, RegExp, Map, Set all fall through to the
+// Object.keys path and compare incorrectly (e.g. any two Dates return true regardless of
+// value, any two Maps return true regardless of content).
+// SOLUTION: add a WeakSet visited guard passed through recursion to break cycles; add
+// explicit instanceof branches for Date (getTime), RegExp (source+flags), Map and Set
+// (entry-by-entry comparison) before the Object.keys fallback.
 function equalBase(a: any, b: any, deep: boolean): boolean {
     if (a === b) return true;
     
@@ -24,11 +30,14 @@ function equalBase(a: any, b: any, deep: boolean): boolean {
     
     const keysA = Object.keys(a);
     const keysB = Object.keys(b);
-    
+
     if (keysA.length !== keysB.length) return false;
-    
-    return keysA.every(key => 
-        keysB.includes(key) && 
+
+    // BUG (Core P1): keysB.includes(key) is O(n) inside an O(n) every() → O(n²).
+    // SOLUTION: replace with `key in b` — O(1) property lookup, same semantics.
+    // keysB can then be dropped entirely (length check above is sufficient).
+    return keysA.every(key =>
+        keysB.includes(key) &&
         (deep ? equalBase(a[key], b[key], true) : a[key] === b[key])
     );
 }

@@ -100,6 +100,15 @@ export class Entity {
         this.onRender(ctx);
         this.components.forEach(component => component.render(ctx));
     }
+    // BUG (Game P2): destroy() sets active=false and clears components but never
+    // removes the entity from EntityManager's three internal maps (entities,
+    // entitiesByTag, entitiesById). Direct callers of destroy() bypass manager.remove(),
+    // leaving the entity in all maps indefinitely — visible in getAll()/getByTag(),
+    // iterated by checkCollisions(), and never GC'd.
+    // SOLUTION: add `_destroyCallback?: () => void` to Entity. EntityManager.add() sets
+    // it to () => this._removeFromMaps(entity); EntityManager.remove() clears it before
+    // calling destroy() to prevent re-entry. destroy() calls _destroyCallback?.() then
+    // nulls it. Decoupled: Entity carries no import of or hard reference to EntityManager.
     destroy(): void {
         this.active = false;
         this.visible = false;
@@ -204,6 +213,13 @@ export class EntityManager {
         this.entities.forEach(entity => { if (entity.active && entity.visible) entity.render(ctx); });
     }
     checkCollisions(): void {
+        // BUG (Game P2): Array.from(this.entities) allocates a new array on every call.
+        // checkCollisions() runs in the fixed-update path (~60×/sec), causing continuous
+        // GC pressure regardless of whether the entity set changed.
+        // SOLUTION: add `private _entityArray: Entity[] = []` and `private _dirty = true`.
+        // Set _dirty = true in add() and remove(). Rebuild the array only when dirty:
+        //   if (this._dirty) { this._entityArray = Array.from(this.entities); this._dirty = false; }
+        // Zero allocation per frame when the entity set is stable.
         const entities = Array.from(this.entities);
         for (let i = 0; i < entities.length; i++) {
             for (let j = i + 1; j < entities.length; j++) {

@@ -14,7 +14,9 @@ const lazyRoutes = new Map<string, LazyRoute>();
 const preloadedComponents = new Map<string, any>();
 const ROUTER_STATE_PATH = 'router.loadingState';
 
-// Initialize router state in global store
+// BUG (Core P2): setState runs at import time, mutating global state as a side effect of
+// any import from this module — even if the lazy router is never used.
+// SOLUTION: move into an explicit initLazyRouter() function, consistent with initRouter().
 globalStore.setState({ router: { loadingState: LoadingState.IDLE } });
 
 // Register a lazy route
@@ -101,6 +103,12 @@ export async function navigateToLazy(path: string): Promise<void> {
 }
 
 // Preload a route without navigating
+// BUG (Core P4): `new Promise(async (resolve, reject) => ...)` anti-pattern — the async
+// executor's return value is ignored by new Promise; any synchronous throw before the
+// first `await` is captured by the async wrapper and silently discarded (neither reject
+// nor the caller receives it). Currently latent because pre-await code uses explicit
+// reject() calls, but a future throw on lines 108-113 would vanish.
+// SOLUTION: make preloadRoute a plain async function; drop the new Promise wrapper entirely.
 export function preloadRoute(path: string): Promise<void> {
     return new Promise(async (resolve, reject) => {
         const route = lazyRoutes.get(path);
@@ -135,6 +143,13 @@ export function onRouterLoadingStateChange(callback: (state: LoadingState) => vo
 
 // ==================== PRELOADING STRATEGIES ====================
 
+// BUG (Core P4): MutationObserver created here is a local var with no saved reference;
+// .disconnect() is impossible, so each call accumulates a new observer on document.body.
+// mouseenter listeners added to links are also never stored (see "not implemented" comment
+// below) — they are orphaned when nodes are removed from the DOM.
+// SOLUTION: return a cleanup () => void that calls observer.disconnect() and iterates a
+// stored [link, handler][] array calling removeEventListener on each entry. Consistent
+// with the subscribeTo/unsubscribe pattern used throughout the codebase.
 export function enableHoverPreloading(): void {
     const links = document.querySelectorAll('a[href^="#/"]');
     links.forEach(link => {
@@ -176,6 +191,10 @@ export function enableHoverPreloading(): void {
     observer.observe(document.body, { childList: true, subtree: true });
 }
 
+// BUG (Core P4): both IntersectionObserver and MutationObserver created inside are local
+// vars — no saved reference, no .disconnect() path. Multiple calls stack indefinitely.
+// SOLUTION: same as enableHoverPreloading — return a cleanup () => void that calls
+// observer.disconnect() and mutationObserver.disconnect().
 export function enableVisiblePreloading(): void {
     // Create intersection observer to watch for route links
     const observer = new IntersectionObserver((entries) => {
