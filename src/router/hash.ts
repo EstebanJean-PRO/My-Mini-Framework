@@ -1,6 +1,5 @@
 import { VirtualElement } from '../core/types';
 import { renderElement } from '../dom/render';
-import { globalStore } from '../state/store';
 
 interface Route {
     path: string;
@@ -10,6 +9,12 @@ interface Route {
 const routes: Route[] = [];
 let currentPath = '';
 let observer: MutationObserver | null = null;
+
+export function destroyRouter(): void {
+    window.removeEventListener('hashchange', handleRouteChange);
+    observer?.disconnect();
+    observer = null;
+}
 
 export function registerRoute(path: string, component: () => VirtualElement): void {
     const existingRouteIndex = routes.findIndex(r => r.path === path);
@@ -30,13 +35,8 @@ export function registerRoute(path: string, component: () => VirtualElement): vo
 // one destroy(). hash.ts and lazy.ts become private implementation modules. Old exports
 // become shims. Resolves Core P3 #5 (duplicate preload caches) for free.
 //
-// BUG (Core P2): initRouter() attaches a hashchange listener, a MutationObserver, and a
-// store subscription but exposes no teardown. A second initRouter() call stacks all three
-// in parallel. SOLUTION: retain the unsubscribe handle from globalStore.subscribe() in a
-// module-level variable; export destroyRouter() that calls removeEventListener,
-// observer.disconnect(), and the unsubscribe fn; call destroyRouter() at the top of
-// initRouter() so re-init is safe. The Router Facade (Core P3) absorbs this permanently.
 export function initRouter(): void {
+    destroyRouter();
     window.addEventListener('hashchange', handleRouteChange);
     
     // Observer pour détecter quand router-outlet est recréé
@@ -53,17 +53,6 @@ export function initRouter(): void {
         subtree: true
     });
     
-    // BUG (Core P2): blanket subscribe fires on every state change (including game-loop
-    // writes at 60fps), each scheduling a full renderElement() via setTimeout — a complete
-    // innerHTML wipe + rebuild with no diffing. The setTimeout adds no value and hides
-    // the storm during debugging.
-    // SOLUTION (interim): rAF guard + hash-change check so re-render only fires once per
-    // frame and only when the route actually changed. Final fix: replace with a per-route
-    // Renderer instance (Core P1 #4) that owns its own subscriptions and diffs in place.
-    globalStore.subscribe(() => {
-        // Petit délai pour que le DOM se mette à jour
-        setTimeout(handleRouteChange, 0);
-    });
     
     handleRouteChange();
 }

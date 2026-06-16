@@ -49,7 +49,7 @@ describe('tag convenience factories', () => {
   // { tag: 'x', id: 'y' } is treated as a child element, silently dropping the props.
   // Acceptance test: flip to plain `it` once the check distinguishes user props from
   // VirtualElements (e.g. by checking for a VirtualElement marker or constructor).
-  it.fails('treats a plain object with a "tag" key as props when it contains non-VNode keys', () => {
+  it('treats a plain object with a "tag" key as props when it contains non-VNode keys', () => {
     const result = div({ tag: 'x', id: 'y' } as any);
     // After fix: id prop is preserved; currently it ends up in children instead
     expect(result.props.id).toBe('y');

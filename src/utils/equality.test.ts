@@ -79,7 +79,7 @@ describe('deepEqual', () => {
   // (Date, Map, Set). These three it.fails tests capture the unguarded cases.
   // Acceptance test: flip each to plain `it` once the respective guard is added.
 
-  it.fails('does not throw (stack overflow) on circular references', () => {
+  it('does not throw (stack overflow) on circular references', () => {
     const a: any = { x: 1 };
     a.self = a;
     const b: any = { x: 1 };
@@ -88,7 +88,7 @@ describe('deepEqual', () => {
     expect(() => deepEqual(a, b)).not.toThrow();
   });
 
-  it.fails('treats two Dates with different timestamps as not equal', () => {
+  it('treats two Dates with different timestamps as not equal', () => {
     const d1 = new Date('2024-01-01');
     const d2 = new Date('2024-01-02');
     // Object.keys(Date) === [] — deepEqual sees zero enumerable keys on both sides
@@ -96,7 +96,7 @@ describe('deepEqual', () => {
     expect(deepEqual(d1, d2)).toBe(false);
   });
 
-  it.fails('treats two Maps with different entries as not equal', () => {
+  it('treats two Maps with different entries as not equal', () => {
     const m1 = new Map([['a', 1]]);
     const m2 = new Map([['a', 2]]);
     // Object.keys(Map) === [] — deepEqual returns true for any two Maps.

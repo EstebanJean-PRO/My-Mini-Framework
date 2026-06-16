@@ -1,20 +1,9 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { DOMAnimation, AnimationStrategy } from './animation';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { DOMAnimation, AnimationStrategy, AnimationOptimizer } from './animation';
 
-// AnimationOptimizer is not exported — its prefersReducedMotion() stale-cache bug
-// (Core P2 #10) cannot be directly tested without exposing the class or its static
-// cachedSupport field. The behavioral consequence (play() taking the wrong path) is
-// only observable after two separate play() calls with a matchMedia mock change in
-// between, which requires internal access to reset the cache. This bug is documented
-// in PLAN.md and its BUG comment in animation.ts; a targeted unit test can be added
-// once AnimationOptimizer is exported or cachedSupport is exposed for testing.
-
-beforeEach(() => {
-  document.body.innerHTML = '';
-  // jsdom does not implement window.matchMedia; stub it so AnimationOptimizer's
-  // prefersReducedMotion() check does not throw during play().
+function stubMatchMedia(matches: boolean) {
   vi.stubGlobal('matchMedia', vi.fn().mockImplementation((query: string) => ({
-    matches: false,
+    matches,
     media: query,
     onchange: null,
     addEventListener: vi.fn(),
@@ -23,6 +12,16 @@ beforeEach(() => {
     removeListener: vi.fn(),
     dispatchEvent: vi.fn(),
   })));
+}
+
+beforeEach(() => {
+  document.body.innerHTML = '';
+  AnimationOptimizer.resetCache();
+  stubMatchMedia(false);
+});
+
+afterEach(() => {
+  AnimationOptimizer.resetCache();
 });
 
 describe('DOMAnimation.playCSS() double onComplete (Core P2 #8)', () => {
@@ -31,7 +30,7 @@ describe('DOMAnimation.playCSS() double onComplete (Core P2 #8)', () => {
   // onComplete is invoked twice — once synchronously from the listener and once when
   // the fallback timeout fires ~150ms later.
   // Acceptance test: flip to plain `it` once a shared `finish()` guard is added.
-  it.fails('onComplete fires exactly once when transitionend fires before the fallback timeout', async () => {
+  it('onComplete fires exactly once when transitionend fires before the fallback timeout', async () => {
     vi.useFakeTimers();
 
     const el = document.createElement('div');
@@ -66,7 +65,7 @@ describe('DOMAnimation.playJS() hangs without GameLoop (Core P2 #9)', () => {
   // returned Promise never resolves and onComplete never fires.
   // Acceptance test: flip to plain `it` once TweenManager gains a self-driven rAF loop
   // that starts on the first tween and stops when the last one completes.
-  it.fails('onComplete fires when no external GameLoop is running', () => {
+  it('onComplete fires when no external GameLoop is running', () => {
     vi.useFakeTimers();
 
     const el = document.createElement('div');
@@ -89,5 +88,25 @@ describe('DOMAnimation.playJS() hangs without GameLoop (Core P2 #9)', () => {
     expect(onComplete).toHaveBeenCalled();
 
     vi.useRealTimers();
+  });
+});
+
+describe('AnimationOptimizer.prefersReducedMotion() stale cache (Core P2 #10)', () => {
+  // prefersReducedMotion() caches matchMedia().matches on first call and never re-evaluates.
+  // If the user toggles their OS reduced-motion setting mid-session, all subsequent
+  // animations ignore the change — they use the stale cached value indefinitely.
+  // SOLUTION: on first call, attach a MediaQueryList `change` listener that updates
+  // cachedSupport.prefersReducedMotion when the preference changes.
+  // Acceptance test: flip to plain `it` once the change listener is in place.
+  it('reflects a mid-session change to the reduced-motion preference', () => {
+    // First call: matches=false → caches false
+    stubMatchMedia(false);
+    expect(AnimationOptimizer.prefersReducedMotion()).toBe(false);
+
+    // User enables reduced motion; update the stub
+    stubMatchMedia(true);
+    // After fix: the change listener fires, cache updates → returns true
+    // Currently: cached false is returned regardless of the new mock
+    expect(AnimationOptimizer.prefersReducedMotion()).toBe(true);
   });
 });

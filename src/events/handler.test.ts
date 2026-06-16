@@ -18,7 +18,7 @@ describe('SyntheticEvent double-release (Core P2 #6)', () => {
   // Two subsequent dispatches then receive the same object simultaneously, corrupting
   // both handlers' event data.
   // Acceptance test: flip to plain `it` once release is set to `() => {}` on pool return.
-  it.fails('calling release() twice does not push the same event into the pool twice', () => {
+  it('calling release() twice does not push the same event into the pool twice', () => {
     vi.useFakeTimers();
 
     let captured: SyntheticEvent | null = null;

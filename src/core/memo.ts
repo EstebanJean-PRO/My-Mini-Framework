@@ -12,11 +12,7 @@ interface MemoizedFunction<R = any> {
     func: (...args: any[]) => R;
 }
 
-// BUG (Core P2): plain Map holds strong references to every function ever passed to
-// memo(); entries are never evicted, preventing GC of unmounted components' functions.
-// SOLUTION: replace with WeakMap — same API, entry lifetime tied to the function key.
-// Consistent with reactiveComponentCache and handlerCache already using WeakMap below.
-const memoCache = new Map<Function, MemoizedFunction>();
+const memoCache = new WeakMap<object, MemoizedFunction>();
 // Cache pour les composants réactifs
 const reactiveComponentCache = new WeakMap<Function, { lastProps: any; lastResult: any }>();
 

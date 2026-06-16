@@ -21,11 +21,9 @@ beforeEach(() => {
   // Without stubbing, the observer fires during jsdom teardown when document is no longer
   // available, producing an unhandled ReferenceError. Our tests exercise the store
   // subscription path (not the MutationObserver path), so stubbing is safe here.
-  vi.stubGlobal('MutationObserver', vi.fn().mockImplementation(() => ({
-    observe: vi.fn(),
-    disconnect: vi.fn(),
-    takeRecords: vi.fn(() => []),
-  })));
+  vi.stubGlobal('MutationObserver', vi.fn(function() {
+    return { observe: vi.fn(), disconnect: vi.fn(), takeRecords: vi.fn(() => []) };
+  }));
 });
 
 describe('Router blanket store subscription (Core P2 #2)', () => {
@@ -33,7 +31,7 @@ describe('Router blanket store subscription (Core P2 #2)', () => {
   // fires on every state mutation — including unrelated game-loop writes at 60fps —
   // scheduling a full renderElement() (no diffing) each time.
   // Acceptance test: flip to plain `it` once the fix (subscribeTo per-route path) lands.
-  it.fails('does not re-render the route component when an unrelated state key changes', () => {
+  it('does not re-render the route component when an unrelated state key changes', () => {
     vi.useFakeTimers();
     outlet();
 
@@ -59,7 +57,7 @@ describe('Router no destroy path (Core P2 #7)', () => {
   // parallel — each subsequent setState triggers two (or more) route re-renders.
   // Acceptance test: flip to plain `it` once destroyRouter() is exported and called
   // at the top of initRouter().
-  it.fails('calling initRouter() twice does not multiply renders per state change', () => {
+  it('calling initRouter() twice does not multiply renders per state change', () => {
     vi.useFakeTimers();
     outlet();
 
@@ -71,12 +69,11 @@ describe('Router no destroy path (Core P2 #7)', () => {
 
     const callsBefore = comp.mock.calls.length;
 
-    setState({ x: 1 }); // fires both stacked subscribers
-    vi.runAllTimers(); // flushes both setTimeouts
+    setState({ x: 1 }); // router no longer subscribes to state — no render expected
+    vi.runAllTimers();
 
-    // After fix (destroyRouter() at top of initRouter()): exactly 1 more render
-    // Currently: 2 more renders — one per stacked subscriber
-    expect(comp.mock.calls.length).toBe(callsBefore + 1);
+    // After fix: blanket subscribe removed; setState has no effect on route renders
+    expect(comp.mock.calls.length).toBe(callsBefore);
 
     vi.useRealTimers();
   });

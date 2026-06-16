@@ -154,23 +154,7 @@ export class Store<T = any> {
 
     // Exécuter toutes les mises à jour en une fois
     private flushUpdates(): void {
-        // BUG (Core P2): detectChangedPaths flags removed top-level keys but doesn't
-        // recurse into them, so sub-path subscribers (e.g. "user.name") are never added
-        // to pendingChanges and their listeners are silently skipped. setState (non-batched)
-        // correctly handles this via notifyPathListeners which value-compares every
-        // registered path directly. SOLUTION: replace pendingChanges iteration with a
-        // notifyPathListeners call — same logic as setState, eliminates the asymmetry and
-        // allows detectChangedPaths / pendingChanges to be removed entirely.
-        this.pendingChanges.forEach(path => {
-            const listeners = this.pathListeners.get(path);
-            if (listeners) {
-                const oldValue = this.getValueByPathAndObject(this.batchOldState!, path);
-                const newValue = this.getValueByPathAndObject(this.batchNewState!, path);
-                listeners.forEach(listener => listener(newValue, oldValue));
-            }
-        });
-
-        this.listeners.forEach(listener => listener(this.batchNewState!, this.batchOldState!));
+        this.notifyListeners(this.batchOldState!, this.batchNewState!);
 
         this.pendingUpdate = false;
         this.pendingChanges.clear();
@@ -215,17 +199,14 @@ export class Store<T = any> {
 
     // Modifier l'état immédiatement
     setState(newState: Partial<T> | ((prevState: T) => T)): void {
-        // BUG (Core P2): shallow spread shares nested object references between oldState
-        // and this.state. A functional updater that mutates a nested object in-place makes
-        // oldState.nested === this.state.nested, so notifyPathListeners sees no change.
-        // SOLUTION: enforce immutable update discipline — updaters must return a new object,
-        // not mutate in place. Add a dev-mode identity check: if the updater returns the
-        // same reference as the previous state, warn immediately. structuredClone() is
-        // correct but O(n) on every call — unacceptable at 60fps game-loop state writes.
         const oldState = { ...this.state };
-        
+
         if (typeof newState === 'function') {
-            this.state = newState(oldState);
+            const result = newState(oldState);
+            if (result === oldState) {
+                console.warn('[Store] setState: updater returned the same state reference — in-place mutation detected. Return a new object to trigger change detection.');
+            }
+            this.state = result;
         } else {
             this.state = { ...oldState, ...newState };
         }

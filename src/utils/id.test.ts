@@ -14,11 +14,11 @@ describe('generateId', () => {
   // Both tests below fail on the current random implementation and pass on the
   // counter-based fix ('mf-' prefix + monotonically increasing decimal suffix).
 
-  it.fails('returns an ID matching the "mf-<n>" monotonic counter format', () => {
+  it('returns an ID matching the "mf-<n>" monotonic counter format', () => {
     expect(generateId()).toMatch(/^mf-\d+$/);
   });
 
-  it.fails('the numeric suffix of two successive IDs differs by exactly 1', () => {
+  it('the numeric suffix of two successive IDs differs by exactly 1', () => {
     // Produce two IDs. With the current random impl, stripping a non-existent 'mf-'
     // prefix leaves a base-36 string; parseInt(base36, 10) returns NaN for letter-
     // containing strings, and Object.is(NaN, NaN) is true — so this assertion would

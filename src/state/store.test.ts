@@ -23,7 +23,7 @@ describe('Store.setState — shallow oldState copy (Core P2 #11)', () => {
   // The fix adds a dev-mode identity check: if the updater returns the same reference
   // as the previous state, a console.warn is issued immediately.
   // Acceptance test: flip to plain `it` once the identity check + warn is in place.
-  it.fails('warns when a functional updater returns the same state reference (in-place mutation)', () => {
+  it('warns when a functional updater returns the same state reference (in-place mutation)', () => {
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
 
     setState({ user: { name: 'Alice' } });
@@ -49,7 +49,7 @@ describe('Store.setBatchedState — missing sub-path notifications (Core P2 #12)
   // skips 'user.name' entirely. Non-batched setState correctly handles this via
   // notifyPathListeners, which value-compares every registered path directly.
   // Acceptance test: flip to plain `it` once flushUpdates delegates to notifyPathListeners.
-  it.fails('notifies sub-path subscribers when a parent key is removed via setBatchedState', () => {
+  it('notifies sub-path subscribers when a parent key is removed via setBatchedState', () => {
     setState({ user: { name: 'Alice' } }); // set initial nested state
 
     const listener = vi.fn();

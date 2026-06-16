@@ -53,12 +53,17 @@ type Direction = 'left' | 'right' | 'up' | 'down';
 // SMART HYBRID OPTIMIZER
 // ============================================================================
 
-class AnimationOptimizer {
-    private static cachedSupport: {
+export class AnimationOptimizer {
+    static cachedSupport: {
         waapi?: boolean;
         cssTransitions?: boolean;
         prefersReducedMotion?: boolean;
     } = {};
+
+    static resetCache(key?: 'waapi' | 'cssTransitions' | 'prefersReducedMotion'): void {
+        if (key) delete this.cachedSupport[key];
+        else this.cachedSupport = {};
+    }
 
     // BUG (Core P4 — unused parameter): `element` is never read; strategy selection uses
     // only `properties` and `customStrategy`. SOLUTION: remove the parameter and update
@@ -113,16 +118,7 @@ class AnimationOptimizer {
     }
 
     static prefersReducedMotion(): boolean {
-        // BUG (Core P2): matchMedia().matches is cached once and never re-evaluated.
-        // User OS setting changes mid-session are silently ignored.
-        // SOLUTION: attach a MediaQueryList `change` listener on first call to keep the
-        // cache current. (supportsCSSTransitions caching is correct — browser capability
-        // never changes; user preference can change at any time, so different treatment.)
-        if (this.cachedSupport.prefersReducedMotion !== undefined) {
-            return this.cachedSupport.prefersReducedMotion;
-        }
-        this.cachedSupport.prefersReducedMotion = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
-        return this.cachedSupport.prefersReducedMotion;
+        return window.matchMedia('(prefers-reduced-motion: reduce)').matches;
     }
 }
 
@@ -413,20 +409,17 @@ export class DOMAnimation {
             const delay = this.options.delay || 0;
             const easing = this.options.easing || 'easeOutQuad';
 
-            // BUG (Core P2): both the transitionend listener and the fallback setTimeout
-            // call onComplete and resolve independently — onComplete fires twice when
-            // transitionend succeeds (the common case). The removeEventListener inside the
-            // setTimeout is also a no-op since the listener was already removed by then.
-            // SOLUTION: extract a shared finish() with a `resolved` guard; both paths call
-            // finish(), which short-circuits after the first invocation.
-            const handleTransitionEnd = () => {
-                this.element.removeEventListener('transitionend', handleTransitionEnd);
+            let finished = false;
+            const finish = () => {
+                if (finished) return;
+                finished = true;
+                this.element.removeEventListener('transitionend', finish);
                 CSSTransitionHelper.cleanup(this.element);
                 this.options.onComplete?.();
                 resolve();
             };
 
-            this.element.addEventListener('transitionend', handleTransitionEnd);
+            this.element.addEventListener('transitionend', finish);
 
             CSSTransitionHelper.applyTransition(
                 this.element,
@@ -436,13 +429,7 @@ export class DOMAnimation {
                 delay
             );
 
-            // Fallback timeout in case transitionend doesn't fire
-            setTimeout(() => {
-                this.element.removeEventListener('transitionend', handleTransitionEnd);
-                CSSTransitionHelper.cleanup(this.element);
-                this.options.onComplete?.();
-                resolve();
-            }, duration + delay + 50);
+            setTimeout(finish, duration + delay + 50);
         });
     }
 

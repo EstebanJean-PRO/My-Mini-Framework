@@ -1,44 +1,47 @@
-// BUG (Core P2): no circular-reference guard (infinite recursion on self-referencing
-// objects) and no special-type handling — Date, RegExp, Map, Set all fall through to the
-// Object.keys path and compare incorrectly (e.g. any two Dates return true regardless of
-// value, any two Maps return true regardless of content).
-// SOLUTION: add a WeakSet visited guard passed through recursion to break cycles; add
-// explicit instanceof branches for Date (getTime), RegExp (source+flags), Map and Set
-// (entry-by-entry comparison) before the Object.keys fallback.
-function equalBase(a: any, b: any, deep: boolean): boolean {
+function equalBase(a: any, b: any, deep: boolean, visited = new WeakSet()): boolean {
     if (a === b) return true;
-    
-    if (typeof a !== typeof b || a == null || b == null) {
-        return false;
+
+    if (typeof a !== typeof b || a == null || b == null) return false;
+
+    if (typeof a !== 'object') return a === b;
+
+    if (a instanceof Date && b instanceof Date) return a.getTime() === b.getTime();
+
+    if (a instanceof RegExp && b instanceof RegExp) return a.source === b.source && a.flags === b.flags;
+
+    if (a instanceof Map && b instanceof Map) {
+        if (a.size !== b.size) return false;
+        for (const [k, v] of a) {
+            if (!b.has(k)) return false;
+            if (deep ? !equalBase(v, b.get(k), true, visited) : v !== b.get(k)) return false;
+        }
+        return true;
     }
-    
-    if (typeof a !== 'object') {
-        return a === b;
+
+    if (a instanceof Set && b instanceof Set) {
+        if (a.size !== b.size) return false;
+        for (const v of a) if (!b.has(v)) return false;
+        return true;
     }
-    
+
     if (Array.isArray(a) && Array.isArray(b)) {
         if (a.length !== b.length) return false;
-        
-        return a.every((item, index) => 
-            deep ? equalBase(item, b[index], true) : item === b[index]
-        );
+        return a.every((item, i) => deep ? equalBase(item, b[i], true, visited) : item === b[i]);
     }
-    
-    if (Array.isArray(a) || Array.isArray(b)) {
-        return false;
-    }
-    
+
+    if (Array.isArray(a) || Array.isArray(b)) return false;
+
+    if (visited.has(a)) return true;
+    visited.add(a);
+
     const keysA = Object.keys(a);
     const keysB = Object.keys(b);
 
     if (keysA.length !== keysB.length) return false;
 
-    // BUG (Core P1): keysB.includes(key) is O(n) inside an O(n) every() → O(n²).
-    // SOLUTION: replace with `key in b` — O(1) property lookup, same semantics.
-    // keysB can then be dropped entirely (length check above is sufficient).
     return keysA.every(key =>
         (key in b) &&
-        (deep ? equalBase(a[key], b[key], true) : a[key] === b[key])
+        (deep ? equalBase(a[key], b[key], true, visited) : a[key] === b[key])
     );
 }
 

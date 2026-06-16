@@ -168,16 +168,37 @@ export class TweenSequence {
 export class TweenManager {
     private tweens = new Set<Tween>();
     private sequences = new Set<TweenSequence>();
+    private rafId: number | null = null;
+    isExternallyDriven = false;
 
-    add(tween: Tween): Tween { this.tweens.add(tween); return tween; }
-    addSequence(sequence: TweenSequence): TweenSequence { this.sequences.add(sequence); return sequence; }
+    add(tween: Tween): Tween { this.tweens.add(tween); this.startIfIdle(); return tween; }
+    addSequence(sequence: TweenSequence): TweenSequence { this.sequences.add(sequence); this.startIfIdle(); return sequence; }
     remove(tween: Tween): void { this.tweens.delete(tween); }
     removeSequence(sequence: TweenSequence): void { this.sequences.delete(sequence); }
+
+    private startIfIdle(): void {
+        if (this.isExternallyDriven || this.rafId !== null) return;
+        const loop = () => {
+            this.update();
+            if (this.tweens.size > 0 || this.sequences.size > 0) {
+                this.rafId = requestAnimationFrame(loop);
+            } else {
+                this.rafId = null;
+            }
+        };
+        this.rafId = requestAnimationFrame(loop);
+    }
+
+    stopSelfDrivenLoop(): void {
+        if (this.rafId !== null) { cancelAnimationFrame(this.rafId); this.rafId = null; }
+    }
+
     update(deltaMs: number = 0): void {
         this.tweens.forEach(tween => { if (tween.update(deltaMs)) this.tweens.delete(tween); });
         this.sequences.forEach(seq => { if (seq.update(deltaMs)) this.sequences.delete(seq); });
     }
     clear(): void {
+        this.stopSelfDrivenLoop();
         this.tweens.forEach(t => t.stop());
         this.sequences.forEach(s => s.stop());
         this.tweens.clear();

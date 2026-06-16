@@ -110,15 +110,13 @@ function releaseSyntheticEvent(syntheticEvent: SyntheticEvent): void {
 
     if (pool.length < POOL_CONFIG.maxPoolSize) {
         // Clean references
-        // BUG (Core P2): `release` is not cleared here; a second call to event.release()
-        // pushes the same object into the pool twice, allowing two handlers to receive it
-        // simultaneously. SOLUTION: add `release: () => {}` to this Object.assign block.
         Object.assign(syntheticEvent, {
             target: null,
             currentTarget: null,
             preventDefault: () => {},
             stopPropagation: () => {},
-            stopImmediatePropagation: () => {}
+            stopImmediatePropagation: () => {},
+            release: () => {}
         });
         ['key', 'code', 'clientX', 'clientY', 'button', 'buttons', 'altKey', 'ctrlKey', 'metaKey', 'shiftKey', 'detail']
             .forEach(prop => delete syntheticEvent[prop as keyof SyntheticEvent]);

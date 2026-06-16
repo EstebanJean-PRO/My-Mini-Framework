@@ -15,12 +15,8 @@ function createElementFactory(tag: string): ElementFactory {
     if (propsOrChildren === null || propsOrChildren === undefined) {
       return createElement(tag, {}, ...children);
     }
-    // BUG (Core P2): `'tag' in propsOrChildren` matches any plain object with a `tag`
-    // property, not just VirtualElements — silently treats it as a child and drops all
-    // props. SOLUTION: check the full VirtualElement shape:
-    // `typeof v.tag === 'string' && Array.isArray(v.children)` — children array is unique
-    // to VirtualElement; ElementProps never has one. Zero interface changes required.
-    if (typeof propsOrChildren === 'string' || typeof propsOrChildren === 'number' || (propsOrChildren instanceof Object && 'tag' in propsOrChildren)) {
+    if (typeof propsOrChildren === 'string' || typeof propsOrChildren === 'number' ||
+        (propsOrChildren instanceof Object && 'tag' in propsOrChildren && Array.isArray((propsOrChildren as any).children))) {
       return createElement(tag, {}, ...(Array.isArray(propsOrChildren) ? propsOrChildren : [propsOrChildren]), ...children);
     }
 

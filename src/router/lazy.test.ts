@@ -6,7 +6,7 @@ describe('Side effect at module import (Core P2 #3)', () => {
   // imports from this module silently mutates global state, even if it never uses the
   // lazy router. Acceptance test: flip to plain `it` once setState is moved into an
   // explicit initLazyRouter() function.
-  it.fails('importing router/lazy does not mutate globalStore', async () => {
+  it('importing router/lazy does not mutate globalStore', async () => {
     vi.resetModules();
 
     // Dynamic imports after resetModules() share the same fresh module registry,

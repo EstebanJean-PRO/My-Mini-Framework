@@ -14,10 +14,9 @@ const lazyRoutes = new Map<string, LazyRoute>();
 const preloadedComponents = new Map<string, any>();
 const ROUTER_STATE_PATH = 'router.loadingState';
 
-// BUG (Core P2): setState runs at import time, mutating global state as a side effect of
-// any import from this module — even if the lazy router is never used.
-// SOLUTION: move into an explicit initLazyRouter() function, consistent with initRouter().
-globalStore.setState({ router: { loadingState: LoadingState.IDLE } });
+export function initLazyRouter(): void {
+    globalStore.setState({ router: { loadingState: LoadingState.IDLE } });
+}
 
 // Register a lazy route
 export function registerLazyRoute(
