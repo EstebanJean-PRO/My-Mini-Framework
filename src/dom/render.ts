@@ -2,6 +2,7 @@ import { VirtualElement, ElementChild, ElementProps } from '../core/types';
 import { registerEventHandler, removeEventHandler, updateEventHandler, attachDirectListener, removeDirectListener } from '../events/handler';
 import { globalStore } from '../state/store';
 import { generateId } from '../utils/id';
+import { startTracking, stopTracking, Unsubscribe } from '../utils/observable';
 
 // Liste des événements non-bubbling qui nécessitent un attachement direct
 const NON_BUBBLING_EVENTS = ['scroll', 'resize', 'load', 'focus', 'blur'];
@@ -18,44 +19,6 @@ interface KeyedChildren {
 }
 
 // ------------------------------------------------
-
-// -------------- Variables globales --------------
-
-// BUG (Core P1 #4 + #5): four module-level scalars form a single global render context.
-// Calling render() for a second container overwrites lastVirtualDOM and unsubscribe,
-// silently orphaning the first root and corrupting both diffs on the next state change.
-// isRerendering is a re-entrancy hack that only works for a single root.
-//
-// SOLUTION (Observer pattern):
-//   Extract the four scalars into a Renderer class. render() creates an instance,
-//   stores it in a Map<HTMLElement, Renderer>, and returns it.
-//   Each Renderer owns its own lastVirtualDOM, unsubscribes[], isRerendering, and
-//   optionally a paths[] for granular subscribeTo() calls (resolves Core P1 #1 Step 2).
-//   Add destroy() to tear down subscriptions and remove the instance from the Map.
-//
-//   class Renderer {
-//     private lastVirtualDOM: VirtualElement | null = null;
-//     private unsubscribes: Array<() => void> = [];
-//     private isRerendering = false;
-//     constructor(readonly component: ComponentFunction,
-//                 readonly container: HTMLElement,
-//                 readonly paths?: string[]) {}
-//     mount(): void { /* initial render + subscribe */ }
-//     destroy(): void { this.unsubscribes.forEach(u => u()); renderers.delete(this.container); }
-//   }
-//   const renderers = new Map<HTMLElement, Renderer>();
-//   export function render(fn, container, paths?): Renderer { ... }
-
-// Dernier rendu (pour le re-rendering automatique)
-let lastRender: { createComponent: ComponentFunction; container: HTMLElement } | null = null;
-// Dernier Virtual DOM rendu
-let lastVirtualDOM: VirtualElement | null = null;
-// Fonction de désabonnement
-let unsubscribe: (() => void) | null = null;
-// Flag indiquant si l'application re-rend actuellement
-let isRerendering = false;
-
-// -------------------------------------------------
 
 // ------------- Fonctions utilitaires -------------
 
@@ -133,32 +96,9 @@ function appendChild(parent: HTMLElement, child: ElementChild): void {
     }
     
     if (child instanceof Object && 'tag' in child) {
-        const childElement = createElement(child);
+        const childElement = createDOMElement(child);
         parent.appendChild(childElement);
         return;
-    }
-}
-
-// Fonction pour re-render l'application
-function rerender(): void {
-    if (lastRender && !isRerendering) {
-        isRerendering = true;
-        
-        const currentVirtualDOM = lastRender.createComponent();
-        
-        if (lastVirtualDOM) {
-            const existingElement = lastRender.container.firstElementChild as HTMLElement;
-            if (existingElement) {
-                diffAndPatch(existingElement, lastVirtualDOM, currentVirtualDOM);
-            } else {
-                renderElement(currentVirtualDOM, lastRender.container);
-            }
-        } else {
-            renderElement(currentVirtualDOM, lastRender.container);
-        }
-        
-        lastVirtualDOM = currentVirtualDOM;
-        isRerendering = false;
     }
 }
 
@@ -172,7 +112,7 @@ export function diffAndPatch(domNode: HTMLElement, oldVNode: VirtualElement, new
 
     // Si les tags sont différents (remplacement complet)
     if (oldVNode.tag !== newVNode.tag) {
-        const newElement = createElement(newVNode);
+        const newElement = createDOMElement(newVNode);
         if (domNode.parentNode && newElement) {
             domNode.parentNode.replaceChild(newElement, domNode);
         }
@@ -238,7 +178,7 @@ function createDomChild(child: ElementChild): Node {
     if (typeof child === 'string' || typeof child === 'number') {
         return document.createTextNode(String(child));
     } else if (child && typeof child === 'object' && 'tag' in child) {
-        return createElement(child);
+        return createDOMElement(child);
     }
 
     return document.createTextNode('');
@@ -287,74 +227,65 @@ function diffChildrenWithKeys(
     oldKeyed: KeyedChildren,
     newKeyed: KeyedChildren
 ): void {
-    // BUG (Core P1): domIndex is stored at scan time and goes stale after the first
-    // insertBefore; subsequent lookups via childNodes[domIndex] access the wrong node,
-    // causing data corruption on the misidentified node and leaving the real node as a
-    // ghost. The trailing while-loop only removes tail excess, not interspersed ghosts.
-    // SOLUTION: snapshot actual ChildNode references before any mutation, then use refs
-    // directly. After processing new children, explicitly remove any old-keyed nodes
-    // whose key is absent from the new list. Remove the trailing while-loop — it becomes
-    // redundant and unsafe once explicit removal is in place.
-    //   const childSnapshot = Array.from(domNode.childNodes);
-    //   oldKeyMap stores { child, ref: childSnapshot[index] }
-    //   After new-children loop: oldKeyMap.forEach((item, key) => {
-    //     if (!newKeySet.has(key)) item.ref.parentNode?.removeChild(item.ref); });
-    const oldKeyMap = new Map<string, { child: ElementChild; domIndex: number }>();
+    const childSnapshot = Array.from(domNode.childNodes);
+    const oldKeyMap = new Map<string, { child: ElementChild; ref: ChildNode }>();
     oldKeyed.withKeys.forEach(({ key, child, index }) => {
-        oldKeyMap.set(key, { child, domIndex: index });
+        oldKeyMap.set(key, { child, ref: childSnapshot[index] });
     });
 
-    // Suivre les nœuds DOM utilisés pour éviter les doublons
-    const usedDomNodes = new Set<number>();
+    const newKeySet = new Set(newKeyed.withKeys.map(({ key }) => key));
+    const usedRefs = new Set<ChildNode>();
     let insertionIndex = 0;
 
-    // Traiter les nouveaux éléments avec keys
     newKeyed.withKeys.forEach(({ key, child: newChild }) => {
         const oldItem = oldKeyMap.get(key);
-        
-        if (oldItem && !usedDomNodes.has(oldItem.domIndex)) {
-            // Element existant avec même key - mettre à jour et déplacer si nécessaire
-            const domChild = domNode.childNodes[oldItem.domIndex];
-            
+
+        if (oldItem && !usedRefs.has(oldItem.ref)) {
             if (typeof oldItem.child === 'object' && typeof newChild === 'object' &&
                 oldItem.child && 'tag' in oldItem.child && newChild && 'tag' in newChild) {
-                updateChild(domNode, domChild, oldItem.child, newChild);
+                updateChild(domNode, oldItem.ref, oldItem.child, newChild);
             }
-            
-            // Déplacer le nœud à la bonne position si nécessaire
-            if (oldItem.domIndex !== insertionIndex) {
-                domNode.insertBefore(domChild, domNode.childNodes[insertionIndex]);
+            const anchor = domNode.childNodes[insertionIndex];
+            if (anchor && anchor !== oldItem.ref) {
+                domNode.insertBefore(oldItem.ref, anchor);
+            } else if (!anchor) {
+                domNode.appendChild(oldItem.ref);
             }
-            
-            usedDomNodes.add(oldItem.domIndex);
+            usedRefs.add(oldItem.ref);
         } else {
-            // Nouvel élément - créer et insérer
             const newDomChild = createDomChild(newChild);
-            if (insertionIndex >= domNode.childNodes.length) {
-                domNode.appendChild(newDomChild);
+            const anchor = domNode.childNodes[insertionIndex];
+            if (anchor) {
+                domNode.insertBefore(newDomChild, anchor);
             } else {
-                domNode.insertBefore(newDomChild, domNode.childNodes[insertionIndex]);
+                domNode.appendChild(newDomChild);
             }
         }
-        
+
         insertionIndex++;
     });
 
-    // Gérer les éléments sans keys
     newKeyed.withoutKeys.forEach(({ child: newChild }) => {
         const newDomChild = createDomChild(newChild);
-        if (insertionIndex >= domNode.childNodes.length) {
-            domNode.appendChild(newDomChild);
+        const anchor = domNode.childNodes[insertionIndex];
+        if (anchor) {
+            domNode.insertBefore(newDomChild, anchor);
         } else {
-            domNode.insertBefore(newDomChild, domNode.childNodes[insertionIndex]);
+            domNode.appendChild(newDomChild);
         }
         insertionIndex++;
     });
 
-    // Supprimer les nœuds excédentaires à la fin
+    // Remove old-keyed nodes whose key is absent from the new list
+    oldKeyMap.forEach((item, key) => {
+        if (!newKeySet.has(key)) {
+            item.ref.parentNode?.removeChild(item.ref);
+        }
+    });
+
+    // Remove any excess unkeyed tail nodes
     while (domNode.childNodes.length > insertionIndex) {
-        const lastChild = domNode.lastChild!;
-        domNode.removeChild(lastChild);
+        domNode.removeChild(domNode.lastChild!);
     }
 }
 
@@ -362,14 +293,11 @@ function diffChildrenWithKeys(
 function diffChildrenByIndex(domNode: HTMLElement, oldChildren: ElementChild[], newChildren: ElementChild[]): void {
     const maxLength = Math.max(oldChildren.length, newChildren.length);
 
-    // BUG (Core P1 #7): childNodes is a live NodeList; removeChild at index i shifts all
-    // subsequent indices, causing the next iteration to skip one node.
-    // SOLUTION: snapshot with Array.from(domNode.childNodes) before the loop and index
-    // into that static array instead of the live NodeList.
+    const childSnapshot = Array.from(domNode.childNodes);
     for (let i = 0; i < maxLength; i++) {
         const oldChild = oldChildren[i];
         const newChild = newChildren[i];
-        const domChild = domNode.childNodes[i];
+        const domChild = childSnapshot[i];
 
         if (newChild === undefined || newChild === null) {
             if (domChild) {
@@ -411,65 +339,90 @@ function diffChildren(domNode: HTMLElement, oldChildren: ElementChild[], newChil
 // Fonction pour rendre un élément virtuel dans un conteneur
 export function renderElement(element: VirtualElement, container: HTMLElement): void {
     container.innerHTML = '';
-    const domElement = createElement(element);
+    const domElement = createDOMElement(element);
     container.appendChild(domElement);
 }
 
-// Fonction de rendu principale
-export function render(createComponent: ComponentFunction, container: HTMLElement): void;
-export function render(element: VirtualElement, container: HTMLElement): void;
-export function render(
-    elementOrFunction: VirtualElement | ComponentFunction, 
-    container: HTMLElement
-): void {
-    const currentVirtualDOM = typeof elementOrFunction === 'function' ? elementOrFunction() : elementOrFunction;
+// Observer pattern: each render root gets its own Renderer instance keyed by container.
+class Renderer {
+    private lastVirtualDOM: VirtualElement | null = null;
+    private unsubscribes: Unsubscribe[] = [];
+    private isRerendering = false;
 
-    if (lastVirtualDOM && typeof elementOrFunction === 'function') {
-        const existingElement = container.firstElementChild as HTMLElement | null;
-        if (existingElement) {
-            diffAndPatch(existingElement, lastVirtualDOM, currentVirtualDOM);
+    constructor(
+        private readonly component: ComponentFunction,
+        private readonly container: HTMLElement,
+    ) {}
+
+    mount(): void {
+        this.performRender();
+    }
+
+    private performRender(): void {
+        if (this.isRerendering) return;
+        this.isRerendering = true;
+
+        startTracking();
+        const currentVDOM = this.component();
+        const paths = stopTracking();
+
+        if (this.lastVirtualDOM) {
+            const existing = this.container.firstElementChild as HTMLElement | null;
+            if (existing) {
+                diffAndPatch(existing, this.lastVirtualDOM, currentVDOM);
+            } else {
+                renderElement(currentVDOM, this.container);
+            }
         } else {
-            // Pas d'élément existant, rendu complet
-            renderElement(currentVirtualDOM, container);
-        }
-    } else {
-        // Premier rendu ou élément statique
-        renderElement(currentVirtualDOM, container);
-    }
-
-    // Sauvegarder pour le prochain diff (seulement pour les fonctions)
-    if (typeof elementOrFunction === 'function') {
-        lastVirtualDOM = currentVirtualDOM;
-    }
-
-    // Gestion des listeners (votre code existant)
-    if (typeof elementOrFunction === 'function') {
-        if (unsubscribe) {
-            unsubscribe();
-            unsubscribe = null;
+            renderElement(currentVDOM, this.container);
         }
 
-        lastRender = { createComponent: elementOrFunction, container };
+        this.lastVirtualDOM = currentVDOM;
 
-        // BUG (Core P1): blanket subscribe fires on every state change, including game-loop
-        // writes, triggering a full VDOM re-render every frame.
-        // SOLUTION (two-step):
-        //   Step 1 (interim) — wrap the callback in an rAF guard so at most one re-render
-        //   fires per frame regardless of how many state mutations the game loop produces.
-        //   Step 2 (final, with Renderer class) — replace subscribe() with per-path
-        //   subscribeTo(path, rerender) calls; the path list is passed to the Renderer
-        //   constructor and held per-instance. Implement alongside Core P1 #4.
-        unsubscribe = globalStore.subscribe(() => {
-            rerender();
+        this.clearSubscriptions();
+        paths.forEach(path => {
+            this.unsubscribes.push(
+                globalStore.subscribeTo(path, () => this.performRender())
+            );
         });
+
+        this.isRerendering = false;
+    }
+
+    private clearSubscriptions(): void {
+        this.unsubscribes.forEach(u => u());
+        this.unsubscribes = [];
+    }
+
+    destroy(): void {
+        this.clearSubscriptions();
+        renderers.delete(this.container);
     }
 }
 
-// BUG (Core P1 #6): exported as `createElement`, colliding with core/element.ts's
-// `createElement(tag, props, ...children) → VirtualElement`. The explicit named re-export
-// in index.ts wins, so callers get this DOM-materialisation function instead of the VDOM
-// factory. SOLUTION: rename to `createDOMElement` here and update the export in index.ts.
-export function createElement(vElement: VirtualElement): HTMLElement {
+const renderers = new Map<HTMLElement, Renderer>();
+
+export function render(createComponent: ComponentFunction, container: HTMLElement): void;
+export function render(element: VirtualElement, container: HTMLElement): void;
+export function render(
+    elementOrFunction: VirtualElement | ComponentFunction,
+    container: HTMLElement
+): void {
+    if (typeof elementOrFunction === 'function') {
+        renderers.get(container)?.destroy();
+        const renderer = new Renderer(elementOrFunction, container);
+        renderers.set(container, renderer);
+        renderer.mount();
+    } else {
+        renderElement(elementOrFunction, container);
+    }
+}
+
+export function destroyRenderer(container: HTMLElement): void {
+    renderers.get(container)?.destroy();
+}
+
+export function createDOMElement(vElement: VirtualElement): HTMLElement {
     const element = document.createElement(vElement.tag);
     applyProps(element, vElement.props);
     vElement.children.forEach(child => appendChild(element, child));

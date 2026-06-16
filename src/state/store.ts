@@ -1,4 +1,5 @@
 import { PathBuilder } from "../utils/pathBuilder";
+import { recordPath } from "../utils/observable";
 
 // Types pour les listeners de changement d'état
 type StateListener<T> = (newState: T, oldState: T) => void;
@@ -26,8 +27,8 @@ export class Store<T = any> {
         return this.state;
     }
 
-    // Dans Store, rendez cette méthode publique
     public getValueByPath(path: string): any {
+        recordPath(path);
         return this.getValueByPathAndObject(this.state, path);
     }
 

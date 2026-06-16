@@ -1,4 +1,4 @@
-import { createElement } from '../../src/dom/render';
+import { createDOMElement } from '../../src/dom/render';
 import {
     ReactiveComponent,
 
@@ -512,7 +512,7 @@ class TodoAppManager {
                 this.handleNewTodoKeyUp(e);
             }
         });
-        newTodoContainer.appendChild(createElement(newTodoInput));
+        newTodoContainer.appendChild(createDOMElement(newTodoInput));
     }
 
 

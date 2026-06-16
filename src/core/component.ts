@@ -1,6 +1,6 @@
 import { globalStore } from '../state/store';
 import { VirtualElement } from './types';
-import { createElement, diffAndPatch } from '../dom/render';
+import { createDOMElement, diffAndPatch } from '../dom/render';
 import { deepEqual } from '../utils/equality';
 
 export interface ComponentLifecycle {
@@ -106,12 +106,12 @@ export class ReactiveComponent implements ComponentLifecycle {
                 } else {
                     // No existing element, do full render
                     this.container.innerHTML = '';
-                    this.container.appendChild(createElement(vdom));
+                    this.container.appendChild(createDOMElement(vdom));
                 }
             } else {
                 // First render
                 this.container.innerHTML = '';
-                this.container.appendChild(createElement(vdom));
+                this.container.appendChild(createDOMElement(vdom));
             }
 
             this.lastVirtualDOM = vdom;

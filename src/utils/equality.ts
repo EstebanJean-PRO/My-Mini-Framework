@@ -37,7 +37,7 @@ function equalBase(a: any, b: any, deep: boolean): boolean {
     // SOLUTION: replace with `key in b` — O(1) property lookup, same semantics.
     // keysB can then be dropped entirely (length check above is sufficient).
     return keysA.every(key =>
-        keysB.includes(key) &&
+        (key in b) &&
         (deep ? equalBase(a[key], b[key], true) : a[key] === b[key])
     );
 }
