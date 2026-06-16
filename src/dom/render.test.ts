@@ -131,6 +131,49 @@ describe('diffAndPatch — index-based children (Core P1 #7)', () => {
   });
 });
 
+// ─── DiffStrategy injection (Core P3) ────────────────────────────────────────
+
+describe('diffAndPatch — Strategy pattern (Core P3)', () => {
+  // SOLUTION: define `type DiffStrategy = (domNode, old, next) => void`; export
+  // `selectStrategy(old, next): DiffStrategy` so callers can plug in custom algorithms
+  // (e.g. LCS-based diffing) without modifying diffChildren.
+  // Acceptance tests: flip to plain `it` once selectStrategy is exported and diffAndPatch
+  // accepts an optional 4th DiffStrategy parameter.
+
+  it.fails('selectStrategy is exported and returns a callable DiffStrategy', async () => {
+    // After fix: selectStrategy is exported from dom/render
+    // Currently: not exported — import resolves to undefined
+    const mod = await import('./render') as any;
+    if (typeof mod.selectStrategy !== 'function') {
+      throw new Error('selectStrategy not yet exported from dom/render');
+    }
+    const strategy = mod.selectStrategy(
+      [createVElement('li', {}, 'A')],
+      [createVElement('li', {}, 'B')]
+    );
+    expect(typeof strategy).toBe('function');
+  });
+
+  it.fails('diffAndPatch passes an injected DiffStrategy to child diffing', () => {
+    const root = container();
+    renderElement(createVElement('ul', {}, createVElement('li', {}, 'A')), root);
+    const ul = root.firstElementChild as HTMLElement;
+
+    const customStrategy = vi.fn();
+
+    // After fix: 4th arg is an optional DiffStrategy used instead of the built-in selection
+    // Currently: extra argument is silently ignored; customStrategy is never called
+    (diffAndPatch as any)(
+      ul,
+      createVElement('ul', {}, createVElement('li', {}, 'A')),
+      createVElement('ul', {}, createVElement('li', {}, 'B')),
+      customStrategy
+    );
+
+    expect(customStrategy).toHaveBeenCalled();
+  });
+});
+
 // ─── render() subscriptions ───────────────────────────────────────────────────
 
 describe('render() — blanket store subscription (Core P1 #1)', () => {
