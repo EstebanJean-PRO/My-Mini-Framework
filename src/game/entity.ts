@@ -3,7 +3,7 @@
  * Dependencies: math.ts (Vector2, collision), time.ts (optional)
  */
 
-import { Vector2, type AABB, type Circle, aabbCollision, circleCollision, circleAABBCollision } from './math';
+import { Vector2, Matrix2D, type AABB, type Circle, aabbCollision, circleCollision, circleAABBCollision } from './math';
 import { generateId } from '../utils/id';
 
 // ============================================================================
@@ -59,6 +59,10 @@ export class Entity {
     // Collision
     collisionShape?: CollisionShape;
 
+    // Scene graph
+    parent: Entity | null = null;
+    children: Entity[] = [];
+
     // Components
     private components = new Map<string, EntityComponent>();
 
@@ -89,16 +93,19 @@ export class Entity {
         if (!this.active) return;
         this.onUpdate(deltaMs);
         this.components.forEach(component => component.update(deltaMs));
+        this.children.forEach(child => child.update(deltaMs));
     }
     fixedUpdate(fixedDelta: number): void {
         if (!this.active) return;
         this.applyVelocity(fixedDelta);
         this.onFixedUpdate(fixedDelta);
+        this.children.forEach(child => child.fixedUpdate(fixedDelta));
     }
     render(ctx?: CanvasRenderingContext2D): void {
         if (!this.active || !this.visible) return;
         this.onRender(ctx);
         this.components.forEach(component => component.render(ctx));
+        this.children.forEach(child => child.render(ctx));
     }
     // BUG (Game P2): destroy() sets active=false and clears components but never
     // removes the entity from EntityManager's three internal maps (entities,
@@ -114,7 +121,39 @@ export class Entity {
         this.visible = false;
         this.components.forEach(component => component.destroy());
         this.components.clear();
+        [...this.children].forEach(child => child.destroy());
+        this.parent?.removeChild(this);
         this.onDestroy();
+    }
+
+    // Scene graph (Composite pattern)
+    addChild(child: Entity): void {
+        child.parent?.removeChild(child);
+        child.parent = this;
+        this.children.push(child);
+    }
+    removeChild(child: Entity): void {
+        const index = this.children.indexOf(child);
+        if (index !== -1) {
+            this.children.splice(index, 1);
+            child.parent = null;
+        }
+    }
+    getLocalMatrix(): Matrix2D {
+        return Matrix2D.identity()
+            .translate(this.position.x, this.position.y)
+            .rotate(this.rotation)
+            .scale(this.scale.x, this.scale.y);
+    }
+    getWorldMatrix(): Matrix2D {
+        const local = this.getLocalMatrix();
+        return this.parent ? this.parent.getWorldMatrix().multiply(local) : local;
+    }
+    localToWorld(point: Vector2): Vector2 {
+        return this.getWorldMatrix().transformPoint(point.x, point.y);
+    }
+    worldToLocal(point: Vector2): Vector2 {
+        return this.getWorldMatrix().invert().transformPoint(point.x, point.y);
     }
 
     applyForce(force: Vector2): void {
