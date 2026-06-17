@@ -19,7 +19,7 @@ describe('loadWithRetry (Core P3 — Template Method)', () => {
   // shared exported function; each caller chains .then() for its own post-load work.
   // Acceptance tests: flip to plain `it` once loadWithRetry is exported from core/lazy.
 
-  it.fails('loadWithRetry is exported and retries the loader before resolving', async () => {
+  it('loadWithRetry is exported and retries the loader before resolving', async () => {
     const mod = await import('./lazy') as any;
     if (typeof mod.loadWithRetry !== 'function') {
       throw new Error('loadWithRetry not yet exported from core/lazy');
@@ -38,7 +38,7 @@ describe('loadWithRetry (Core P3 — Template Method)', () => {
     expect(loader).toHaveBeenCalledTimes(3);
   });
 
-  it.fails('loadWithRetry rejects after exhausting all retry attempts', async () => {
+  it('loadWithRetry rejects after exhausting all retry attempts', async () => {
     const mod = await import('./lazy') as any;
     if (typeof mod.loadWithRetry !== 'function') {
       throw new Error('loadWithRetry not yet exported from core/lazy');
@@ -65,7 +65,7 @@ describe('LoadingState transition guard (Core P3 — State pattern)', () => {
   //     TIMEOUT → IDLE (via reset() only)
   // Acceptance test: flip to plain `it` once the transition guard is in place.
 
-  it.fails('LazyComponent rejects a second load() call from ERROR state without reset', async () => {
+  it('LazyComponent rejects a second load() call from ERROR state without reset', async () => {
     const alwaysFails = vi.fn().mockRejectedValue(new Error('always fails'));
     const comp = new LazyComponent(alwaysFails);
 

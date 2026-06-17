@@ -1,5 +1,9 @@
-// REFACTOR (Core P3 — Facade): this file will become the unified Router entry point,
-// merging hash.ts's eager routes and router/lazy.ts's lazy routes into one registry,
-// one navigateTo(), and one destroy(). LazyRouterExtension (core/lazy.ts) will be
-// deleted; its routes will be handled here. For now: stub only.
-export {};
+export { navigateTo, registerRoute, initRouter, destroyRouter } from './hash';
+export { registerLazyRoute, navigateToLazy, initLazyRouter } from './lazy';
+export { lazyRouterExtension } from '../core/lazy';
+
+import { lazyRouterExtension } from '../core/lazy';
+
+export function hasRoute(path: string): boolean {
+    return lazyRouterExtension.hasRoute(path);
+}

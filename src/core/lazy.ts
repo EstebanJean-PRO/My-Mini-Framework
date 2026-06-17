@@ -63,22 +63,41 @@ export function configureLazy(config: Partial<LazyConfig>): void {
 
 // =================== LAZY COMPONENTS ===================
 
-// REFACTOR (Core P3 — State pattern): LoadingState drives 13+ raw `this.state = X`
-// assignments across LazyComponent, LazyReactiveComponent, SuspenseBoundary, and
-// LazyRouterExtension with no transition validation. Line 135 mutates state mid-render,
-// risking re-render loops. Any code can assign any state from any state silently.
-// SOLUTION: replace scattered assignments with a guarded transition(to) method backed by
-// an explicit VALID_TRANSITIONS table. Throws on invalid transitions (dev safety), making
-// the state machine explicit and auditable without restructuring all classes.
-//   private static VALID_TRANSITIONS: Record<LoadingState, LoadingState[]> = {
-//     [LoadingState.IDLE]:    [LoadingState.LOADING],
-//     [LoadingState.LOADING]: [LoadingState.LOADED, LoadingState.ERROR, LoadingState.TIMEOUT],
-//     [LoadingState.LOADED]:  [],
-//     [LoadingState.ERROR]:   [LoadingState.IDLE],
-//     [LoadingState.TIMEOUT]: [LoadingState.IDLE],
-//   };
-//   private transition(to: LoadingState): void { /* validate + assign */ }
+export function loadWithRetry<T>(loader: () => Promise<T>, maxRetries: number, retryDelay: number): Promise<T> {
+    return new Promise<T>((resolve, reject) => {
+        let attempts = 0;
+        const attempt = () => {
+            attempts++;
+            loader()
+                .then(resolve)
+                .catch((err) => {
+                    if (attempts <= maxRetries) {
+                        setTimeout(attempt, retryDelay);
+                    } else {
+                        reject(err);
+                    }
+                });
+        };
+        attempt();
+    });
+}
+
 export class LazyComponent<P = any> {
+    private static readonly VALID_TRANSITIONS: Record<LoadingState, LoadingState[]> = {
+        [LoadingState.IDLE]: [LoadingState.LOADING],
+        [LoadingState.LOADING]: [LoadingState.LOADED, LoadingState.ERROR, LoadingState.TIMEOUT],
+        [LoadingState.LOADED]: [],
+        [LoadingState.ERROR]: [LoadingState.IDLE],
+        [LoadingState.TIMEOUT]: [LoadingState.IDLE],
+    };
+
+    private transition(to: LoadingState): void {
+        if (!LazyComponent.VALID_TRANSITIONS[this.state].includes(to)) {
+            throw new Error(`Invalid transition from "${this.state}" to "${to}"`);
+        }
+        this.state = to;
+    }
+
     private loadPromise: Promise<Component<P>> | null = null;
     private loadedComponent: Component<P> | null = null;
     private memoizedComponent: Component<P> | null = null;
@@ -97,42 +116,41 @@ export class LazyComponent<P = any> {
         if (this.loadedComponent && this.memoizedComponent) return this.memoizedComponent;
         if (this.loadPromise) return this.loadPromise;
 
-        this.state = LoadingState.LOADING;
-        this.loadPromise = new Promise<Component<P>>((resolve, reject) => {
-            let attempts = 0;
-            const attemptLoad = () => {
-                attempts++;
-                const timeoutId = setTimeout(() => {
-                    this.state = LoadingState.TIMEOUT;
-                    this.error = new Error('Loading timed out');
-                    this.loadPromise = null;
-                    reject(this.error);
-                }, globalConfig.timeout);
+        this.transition(LoadingState.LOADING);
 
-                this.loader()
-                    .then((component) => {
-                        clearTimeout(timeoutId);
-                        this.loadedComponent = component;
-                        this.memoizedComponent = memo(component, (prevProps, nextProps) =>
-                            deepEqual(prevProps, nextProps));
-                        this.state = LoadingState.LOADED;
-                        this.loadPromise = null;
-                        resolve(this.memoizedComponent);
-                    })
-                    .catch((err) => {
-                        clearTimeout(timeoutId);
-                        if (attempts < (globalConfig.retryAttempts || 0) + 1) {
-                            setTimeout(attemptLoad, globalConfig.retryDelay);
-                        } else {
-                            this.state = LoadingState.ERROR;
-                            this.error = err;
-                            this.loadPromise = null;
-                            reject(err);
-                        }
-                    });
-            };
-            attemptLoad();
+        let timedOut = false;
+        const timedLoader = (): Promise<Component<P>> => new Promise((resolve, reject) => {
+            if (timedOut) { reject(this.error); return; }
+            const timeoutId = setTimeout(() => {
+                timedOut = true;
+                this.transition(LoadingState.TIMEOUT);
+                this.error = new Error('Loading timed out');
+                this.loadPromise = null;
+                reject(this.error);
+            }, globalConfig.timeout);
+
+            this.loader()
+                .then((component) => { clearTimeout(timeoutId); resolve(component); })
+                .catch((err) => { clearTimeout(timeoutId); reject(err); });
         });
+
+        this.loadPromise = loadWithRetry(timedLoader, globalConfig.retryAttempts || 0, globalConfig.retryDelay || 0)
+            .then((component) => {
+                this.loadedComponent = component;
+                this.memoizedComponent = memo(component, (prevProps, nextProps) =>
+                    deepEqual(prevProps, nextProps));
+                this.transition(LoadingState.LOADED);
+                this.loadPromise = null;
+                return this.memoizedComponent;
+            })
+            .catch((err) => {
+                if (this.state !== LoadingState.TIMEOUT) {
+                    this.transition(LoadingState.ERROR);
+                    this.error = err;
+                }
+                this.loadPromise = null;
+                throw err;
+            });
         return this.loadPromise;
     }
 
@@ -378,12 +396,6 @@ export class SuspenseBoundary {
 
 // ==================== CODE SPLITTING ====================
 
-// REFACTOR (Core P3 — Template Method): the attemptLoad retry loop is duplicated verbatim
-// in LazyComponent.load() and here. Both have a local `attempts` counter, recursive inner
-// function, and retry-or-reject branch; only timeout logic and post-success bookkeeping
-// differ. SOLUTION: extract `loadWithRetry<T>(loader, opts): Promise<T>` — a single
-// function that owns the counter + retry loop; callers chain .then() for their own
-// post-load work (memoization, module caching). Timeout is an optional opts field.
 export async function dynamicImport<T = any>(importFn: () => Promise<T>, options?: { id?: string; retryAttempts?: number }): Promise<T> {
     const memoizedImportFn = useCallback(importFn, []);
     if (options?.id) {
@@ -391,27 +403,16 @@ export async function dynamicImport<T = any>(importFn: () => Promise<T>, options
         if (loadingPromises.has(options.id)) return loadingPromises.get(options.id)!;
     }
 
-    const promise = new Promise<T>((resolve, reject) => {
-        let attempts = 0;
-        const maxAttempts = options?.retryAttempts ?? (globalConfig.retryAttempts || 0);
-        const attemptLoad = () => {
-            attempts++;
-            memoizedImportFn()
-                .then((module) => {
-                    if (options?.id) { moduleCache.set(options.id, module); loadingPromises.delete(options.id); }
-                    resolve(module);
-                })
-                .catch((err) => {
-                    if (attempts <= maxAttempts) {
-                        setTimeout(attemptLoad, globalConfig.retryDelay);
-                    } else {
-                        if (options?.id) loadingPromises.delete(options.id);
-                        reject(err);
-                    }
-                });
-        };
-        attemptLoad();
-    });
+    const maxAttempts = options?.retryAttempts ?? (globalConfig.retryAttempts || 0);
+    const promise = loadWithRetry(memoizedImportFn, maxAttempts, globalConfig.retryDelay || 0)
+        .then((module) => {
+            if (options?.id) { moduleCache.set(options.id, module); loadingPromises.delete(options.id); }
+            return module;
+        })
+        .catch((err) => {
+            if (options?.id) loadingPromises.delete(options.id);
+            throw err;
+        });
 
     // BUG (Core P4 — Bug A): moduleCache.set stores the unresolved Promise here, making
     // moduleCache return Promises during in-flight loads. The loadingPromises check on
@@ -517,6 +518,10 @@ export class LazyRouterExtension {
     }
 
     getLoadingState(): LoadingState { return this.currentLoadingState; }
+
+    hasRoute(path: string): boolean {
+        return this.lazyRoutes.some(r => r.path === path);
+    }
 }
 
 // ==================== FACTORY FUNCTIONS ====================

@@ -103,7 +103,7 @@ function appendChild(parent: HTMLElement, child: ElementChild): void {
 }
 
 // Fonction pour comparer et patcher deux Virtual DOM
-export function diffAndPatch(domNode: HTMLElement, oldVNode: VirtualElement, newVNode: VirtualElement): void {
+export function diffAndPatch(domNode: HTMLElement, oldVNode: VirtualElement, newVNode: VirtualElement, strategy?: DiffStrategy): void {
     // Vérifier si les deux sont mémorisés avec la même clé
     if (oldVNode.__memoized && newVNode.__memoized && 
         oldVNode.__memoKey === newVNode.__memoKey) {
@@ -121,7 +121,7 @@ export function diffAndPatch(domNode: HTMLElement, oldVNode: VirtualElement, new
 
     // Même tag (mise à jour)
     diffProps(domNode, oldVNode.props, newVNode.props);
-    diffChildren(domNode, oldVNode.children, newVNode.children);
+    diffChildren(domNode, oldVNode.children, newVNode.children, strategy);
 }
 
 // Fonction pour comparer les props de deux éléments
@@ -312,26 +312,26 @@ function diffChildrenByIndex(domNode: HTMLElement, oldChildren: ElementChild[], 
     }
 }
 
-// REFACTOR (Core P3 — Strategy pattern): keyed vs index diffing is selected by a hardcoded
-// if/else here. diffChildrenWithKeys also handles unkeyed children internally (lines above),
-// blurring the strategy boundary. Adding a third strategy (e.g. LCS-based) requires
-// modifying this function and restructuring diffChildrenWithKeys.
-// SOLUTION: define `type DiffStrategy = (domNode, old, next) => void`; extract
-// `selectStrategy(old, next): DiffStrategy` as a separate function; move unkeyed-child
-// handling out of diffChildrenWithKeys so each strategy owns only its domain. diffChildren
-// becomes a one-liner: `selectStrategy(old, next)(domNode, old, next)`.
-function diffChildren(domNode: HTMLElement, oldChildren: ElementChild[], newChildren: ElementChild[]): void {
-    const oldKeyedChildren = extractKeyedChildren(oldChildren);
-    const newKeyedChildren = extractKeyedChildren(newChildren);
+export type DiffStrategy = (domNode: HTMLElement, old: ElementChild[], next: ElementChild[]) => void;
 
-    // Si pas de keys, utiliser l'ancien algorithme simple
-    if (oldKeyedChildren.withKeys.length === 0 && newKeyedChildren.withKeys.length === 0) {
-        diffChildrenByIndex(domNode, oldChildren, newChildren);
-        return;
+function keyedStrategy(domNode: HTMLElement, old: ElementChild[], next: ElementChild[]): void {
+    diffChildrenWithKeys(domNode, extractKeyedChildren(old), extractKeyedChildren(next));
+}
+
+export function selectStrategy(old: ElementChild[], next: ElementChild[]): DiffStrategy {
+    const oldKeyed = extractKeyedChildren(old);
+    const newKeyed = extractKeyedChildren(next);
+
+    if (oldKeyed.withKeys.length === 0 && newKeyed.withKeys.length === 0) {
+        return diffChildrenByIndex;
     }
 
-    // Algorithme avec keys
-    diffChildrenWithKeys(domNode, oldKeyedChildren, newKeyedChildren);
+    return keyedStrategy;
+}
+
+function diffChildren(domNode: HTMLElement, oldChildren: ElementChild[], newChildren: ElementChild[], strategy?: DiffStrategy): void {
+    const fn = strategy ?? selectStrategy(oldChildren, newChildren);
+    fn(domNode, oldChildren, newChildren);
 }
 
 // -------------------------------------------------

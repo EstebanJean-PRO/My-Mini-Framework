@@ -140,7 +140,7 @@ describe('diffAndPatch — Strategy pattern (Core P3)', () => {
   // Acceptance tests: flip to plain `it` once selectStrategy is exported and diffAndPatch
   // accepts an optional 4th DiffStrategy parameter.
 
-  it.fails('selectStrategy is exported and returns a callable DiffStrategy', async () => {
+  it('selectStrategy is exported and returns a callable DiffStrategy', async () => {
     // After fix: selectStrategy is exported from dom/render
     // Currently: not exported — import resolves to undefined
     const mod = await import('./render') as any;
@@ -154,7 +154,7 @@ describe('diffAndPatch — Strategy pattern (Core P3)', () => {
     expect(typeof strategy).toBe('function');
   });
 
-  it.fails('diffAndPatch passes an injected DiffStrategy to child diffing', () => {
+  it('diffAndPatch passes an injected DiffStrategy to child diffing', () => {
     const root = container();
     renderElement(createVElement('ul', {}, createVElement('li', {}, 'A')), root);
     const ul = root.firstElementChild as HTMLElement;

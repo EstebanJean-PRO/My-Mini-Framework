@@ -18,7 +18,7 @@ describe('Router Facade (Core P3)', () => {
   // src/router/index.ts with one registry, one navigateTo, and one destroy().
   // Acceptance tests: flip to plain `it` once src/router/index.ts is created.
 
-  it.fails('src/router/index.ts exports a unified Router API', async () => {
+  it('src/router/index.ts exports a unified Router API', async () => {
     // After fix: router/index.ts is created with a unified API
     // Currently: the module does not exist; import throws
     let facade: any;
@@ -34,7 +34,7 @@ describe('Router Facade (Core P3)', () => {
     expect(typeof facade.registerLazyRoute).toBe('function');
   });
 
-  it.fails('a route registered via LazyRouterExtension is reachable from the unified registry', async () => {
+  it('a route registered via LazyRouterExtension is reachable from the unified registry', async () => {
     // LazyRouterExtension (core/lazy.ts:472) stores routes in its own private lazyRoutes[]
     // separate from hash.ts routes[]. After the Facade, one registry serves all three APIs.
     let facade: any;
