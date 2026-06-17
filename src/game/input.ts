@@ -102,25 +102,19 @@ export class InputManager {
         }
     };
 
-    // BUG (Game P1): all listeners attach to `document` globally, and onMouseDown,
-    // onMouseUp, and all touch handlers call e.preventDefault() unconditionally. This
-    // blocks text selection, context menus, and native touch scrolling across the entire
-    // page. Touch events also use { passive: false }, disabling scroll optimisations
-    // globally.
-    // SOLUTION: accept a `target: HTMLElement` constructor parameter (e.g. the canvas).
-    // Attach all listeners to target instead of document. preventDefault on the canvas
-    // is correct game behaviour; the rest of the DOM is then untouched. Default to
-    // document for backwards compatibility if no target is provided.
-    constructor() {
-        document.addEventListener('keydown', this.onKeyDown);
-        document.addEventListener('keyup', this.onKeyUp);
-        document.addEventListener('mousedown', this.onMouseDown);
-        document.addEventListener('mouseup', this.onMouseUp);
-        document.addEventListener('mousemove', this.onMouseMove);
-        document.addEventListener('touchstart', this.onTouchStart, { passive: false });
-        document.addEventListener('touchmove', this.onTouchMove, { passive: false });
-        document.addEventListener('touchend', this.onTouchEnd, { passive: false });
-        document.addEventListener('touchcancel', this.onTouchEnd, { passive: false });
+    private target: HTMLElement | Document;
+
+    constructor(target?: HTMLElement) {
+        this.target = target ?? document;
+        this.target.addEventListener('keydown', this.onKeyDown as EventListener);
+        this.target.addEventListener('keyup', this.onKeyUp as EventListener);
+        this.target.addEventListener('mousedown', this.onMouseDown as EventListener);
+        this.target.addEventListener('mouseup', this.onMouseUp as EventListener);
+        this.target.addEventListener('mousemove', this.onMouseMove as EventListener);
+        this.target.addEventListener('touchstart', this.onTouchStart as EventListener, { passive: false });
+        this.target.addEventListener('touchmove', this.onTouchMove as EventListener, { passive: false });
+        this.target.addEventListener('touchend', this.onTouchEnd as EventListener, { passive: false });
+        this.target.addEventListener('touchcancel', this.onTouchEnd as EventListener, { passive: false });
     }
 
     update(): void {
@@ -328,20 +322,20 @@ export class InputManager {
         this.bufferIndex = 0;
     }
     destroy(): void {
-        document.removeEventListener('keydown', this.onKeyDown);
-        document.removeEventListener('keyup', this.onKeyUp);
-        document.removeEventListener('mousedown', this.onMouseDown);
-        document.removeEventListener('mouseup', this.onMouseUp);
-        document.removeEventListener('mousemove', this.onMouseMove);
-        document.removeEventListener('touchstart', this.onTouchStart);
-        document.removeEventListener('touchmove', this.onTouchMove);
-        document.removeEventListener('touchend', this.onTouchEnd);
-        document.removeEventListener('touchcancel', this.onTouchEnd);
+        this.target.removeEventListener('keydown', this.onKeyDown as EventListener);
+        this.target.removeEventListener('keyup', this.onKeyUp as EventListener);
+        this.target.removeEventListener('mousedown', this.onMouseDown as EventListener);
+        this.target.removeEventListener('mouseup', this.onMouseUp as EventListener);
+        this.target.removeEventListener('mousemove', this.onMouseMove as EventListener);
+        this.target.removeEventListener('touchstart', this.onTouchStart as EventListener);
+        this.target.removeEventListener('touchmove', this.onTouchMove as EventListener);
+        this.target.removeEventListener('touchend', this.onTouchEnd as EventListener);
+        this.target.removeEventListener('touchcancel', this.onTouchEnd as EventListener);
         this.clear();
     }
 }
 
 // Singleton
 let input: InputManager | null = null;
-export const getInput = (): InputManager => input ?? (input = new InputManager());
+export const getInput = (target?: HTMLElement): InputManager => input ?? (input = new InputManager(target));
 export const destroyInput = (): void => { input?.destroy(); input = null; };

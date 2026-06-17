@@ -56,10 +56,9 @@ export class Tween<T = any> {
     private easing: EasingFunction;
     private onUpdate?: (value: number) => void;
     private onComplete?: () => void;
-    private startTime = 0;
-    private pausedAt = 0;
-    private pausedTotal = 0;
+    private elapsed = 0;
     private running = false;
+    private paused = false;
     private completed = false;
 
     constructor(options: TweenOptions<T>) {
@@ -74,31 +73,22 @@ export class Tween<T = any> {
     }
 
     start(): this {
-        this.startTime = now();
-        this.pausedTotal = 0;
-        this.pausedAt = 0;
+        this.elapsed = 0;
         this.running = true;
+        this.paused = false;
         this.completed = false;
         this.from = (this.target[this.property] as unknown as number) || 0;
         return this;
     }
-    stop(): this { this.running = false; this.pausedAt = 0; return this; }
-    pause(): this { if (this.running && !this.pausedAt) this.pausedAt = now(); return this; }
-    resume(): this { if (this.pausedAt) { this.pausedTotal += now() - this.pausedAt; this.pausedAt = 0; } return this; }
+    stop(): this { this.running = false; this.paused = false; return this; }
+    pause(): this { this.paused = true; return this; }
+    resume(): this { this.paused = false; return this; }
     reset(): this { return this.stop().start(); }
 
-    // BUG (Game P1): _deltaMs is unused; progress uses now() - startTime - pausedTotal
-    // (wall-clock time). GameLoop.setTimeScale() scales deltaMs before passing it to
-    // TweenManager.update(scaledDelta) → tween.update(scaledDelta), but the tween discards
-    // it. setTimeScale(0.5) has zero effect on any Tween.
-    // SOLUTION: replace startTime/pausedAt/pausedTotal with a single `elapsed = 0` counter.
-    // update(deltaMs): this.elapsed += deltaMs; progress = min(1, elapsed / duration).
-    // pause() sets a flag to skip accumulation; resume() clears it; start() resets elapsed.
-    // GameLoop already delivers scaled delta — tweens just consume what they receive.
-    update(_deltaMs: number = 0): boolean {
-        if (!this.running || this.pausedAt || this.completed) return false;
-        const elapsed = now() - this.startTime - this.pausedTotal;
-        const progress = min(1, elapsed / this.duration);
+    update(deltaMs: number = 0): boolean {
+        if (!this.running || this.paused || this.completed) return false;
+        this.elapsed += deltaMs;
+        const progress = min(1, this.elapsed / this.duration);
         const t = this.easing(progress);
         const value = lerp(this.from, this.to, t);
         (this.target[this.property] as unknown as number) = value;
@@ -112,49 +102,46 @@ export class Tween<T = any> {
         return false;
     }
 
-    isRunning(): boolean { return this.running && !this.pausedAt; }
+    isRunning(): boolean { return this.running && !this.paused; }
     isComplete(): boolean { return this.completed; }
     getProgress(): number {
         if (this.completed) return 1;
         if (!this.running) return 0;
-        const elapsed = now() - this.startTime - this.pausedTotal;
-        return min(1, elapsed / this.duration);
+        return min(1, this.elapsed / this.duration);
     }
 }
 
 export class TweenSequence {
-    // BUG (Game P1): addParallel pushes into parallelGroups (never read) AND spreads all
-    // tweens into this.tweens. update() uses a single currentIndex advancing one slot at a
-    // time — parallel tweens run sequentially with no group awareness.
-    // SOLUTION: change tweens to (Tween | Tween[])[]. add() pushes a single Tween; addParallel()
-    // pushes the group array as one slot. update() checks Array.isArray(current): if true,
-    // ticks all tweens in the group each frame and advances only when all are complete.
-    // parallelGroups field is eliminated.
-    private tweens: Tween[] = [];
-    private parallelGroups: Tween[][] = [];
+    private tweens: (Tween | Tween[])[] = [];
     private currentIndex = 0;
     private running = false;
 
     add(tween: Tween): this { this.tweens.push(tween); return this; }
-    addParallel(...tweens: Tween[]): this { this.parallelGroups.push(tweens); this.tweens.push(...tweens); return this; }
+    addParallel(...tweens: Tween[]): this { this.tweens.push(tweens); return this; }
     start(): this {
         this.currentIndex = 0;
         this.running = true;
-        if (this.tweens.length > 0) this.tweens[0].start();
+        if (this.tweens.length > 0) this.startSlot(this.tweens[0]);
         return this;
     }
-    stop(): this { this.running = false; this.tweens.forEach(t => t.stop()); return this; }
+    stop(): this {
+        this.running = false;
+        this.tweens.forEach(slot => Array.isArray(slot) ? slot.forEach(t => t.stop()) : slot.stop());
+        return this;
+    }
     update(deltaMs: number = 0): boolean {
         if (!this.running || this.currentIndex >= this.tweens.length) {
             this.running = false;
             return true;
         }
-        const currentTween = this.tweens[this.currentIndex];
-        const isComplete = currentTween.update(deltaMs);
+        const current = this.tweens[this.currentIndex];
+        const isComplete = Array.isArray(current)
+            ? current.map(t => t.update(deltaMs)).every(Boolean)
+            : current.update(deltaMs);
         if (isComplete) {
             this.currentIndex++;
             if (this.currentIndex < this.tweens.length) {
-                this.tweens[this.currentIndex].start();
+                this.startSlot(this.tweens[this.currentIndex]);
             } else {
                 this.running = false;
                 return true;
@@ -163,6 +150,11 @@ export class TweenSequence {
         return false;
     }
     isRunning(): boolean { return this.running; }
+
+    private startSlot(slot: Tween | Tween[]): void {
+        if (Array.isArray(slot)) slot.forEach(t => t.start());
+        else slot.start();
+    }
 }
 
 export class TweenManager {
@@ -178,8 +170,12 @@ export class TweenManager {
 
     private startIfIdle(): void {
         if (this.isExternallyDriven || this.rafId !== null) return;
+        let lastTime = now();
         const loop = () => {
-            this.update();
+            const currentTime = now();
+            const deltaMs = currentTime - lastTime;
+            lastTime = currentTime;
+            this.update(deltaMs);
             if (this.tweens.size > 0 || this.sequences.size > 0) {
                 this.rafId = requestAnimationFrame(loop);
             } else {
@@ -438,20 +434,12 @@ export class AnimationPlayer {
         }
 
         this.elapsedTime += deltaMs;
-        // BUG (Game P1): frameDuration is captured once as frame N's duration. After
-        // advanceFrame() increments currentFrameIndex, the while loop still subtracts and
-        // compares against frame N's duration. Non-uniform frameDurations accumulate timing
-        // error: a short frame N+1 is never consumed in the same update call.
-        // SOLUTION: re-evaluate getFrameDuration() each iteration so it reads the current
-        // frame after each advanceFrame(). Subtract before advancing so elapsedTime
-        // represents time past the frame that just ended.
-        //   while (true) { const fd = getFrameDuration(); if (elapsedTime < fd) break;
-        //                   elapsedTime -= fd; advanceFrame(); }
-        const frameDuration = this.getFrameDuration();
 
-        while (this.elapsedTime >= frameDuration) {
-            this.advanceFrame();
+        while (true) {
+            const frameDuration = this.getFrameDuration();
+            if (this.elapsedTime < frameDuration) break;
             this.elapsedTime -= frameDuration;
+            this.advanceFrame();
         }
     }
 

@@ -90,11 +90,7 @@ export class GameLoop {
             this.paused = false;
             this.lastFrameTime = now();
             this.deltaTime.reset();
-            // BUG (Game P1): accumulator is not reset here. Its pre-pause residual
-            // (always < fixedTimestep by definition) combines with the first resumed
-            // frame's deltaMs, potentially triggering one extra fixedUpdate call
-            // immediately — enough to cause a visible physics step discontinuity.
-            // SOLUTION: add `this.accumulator = 0` here, mirroring start().
+            this.accumulator = 0;
         }
         return this;
     }
