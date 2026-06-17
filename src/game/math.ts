@@ -112,3 +112,101 @@ export const pointInCircle = (x: number, y: number, circle: Circle): boolean => 
     const dx = x - circle.x, dy = y - circle.y;
     return dx * dx + dy * dy <= circle.radius * circle.radius;
 };
+
+// Smooth interpolation (Hermite), clamped to [0, 1]
+export const smoothstep = (edge0: number, edge1: number, x: number): number => {
+    if (edge1 === edge0) return x < edge0 ? 0 : 1;
+    const t = clamp((x - edge0) / (edge1 - edge0), 0, 1);
+    return t * t * (3 - 2 * t);
+};
+
+// Seeded PRNG (mulberry32) — deterministic, repeatable sequence of doubles in [0, 1)
+export function mulberry32(seed: number): () => number {
+    let a = seed;
+    return (): number => {
+        a |= 0;
+        a = (a + 0x6D2B79F5) | 0;
+        let t = Math.imul(a ^ (a >>> 15), 1 | a);
+        t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+        return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+    };
+}
+
+export const Bezier = {
+    quadratic(t: number, p0: number, p1: number, p2: number): number {
+        const u = 1 - t;
+        return u * u * p0 + 2 * u * t * p1 + t * t * p2;
+    },
+    cubic(t: number, p0: number, p1: number, p2: number, p3: number): number {
+        const u = 1 - t;
+        return u * u * u * p0 + 3 * u * u * t * p1 + 3 * u * t * t * p2 + t * t * t * p3;
+    },
+    quadraticPoint(t: number, p0: Vector2, p1: Vector2, p2: Vector2): Vector2 {
+        return new Vector2(
+            Bezier.quadratic(t, p0.x, p1.x, p2.x),
+            Bezier.quadratic(t, p0.y, p1.y, p2.y)
+        );
+    },
+    cubicPoint(t: number, p0: Vector2, p1: Vector2, p2: Vector2, p3: Vector2): Vector2 {
+        return new Vector2(
+            Bezier.cubic(t, p0.x, p1.x, p2.x, p3.x),
+            Bezier.cubic(t, p0.y, p1.y, p2.y, p3.y)
+        );
+    },
+};
+
+// 2D affine transform — canvas setTransform(a, b, c, d, e, f) convention
+export class Matrix2D {
+    constructor(
+        public a = 1, public b = 0,
+        public c = 0, public d = 1,
+        public tx = 0, public ty = 0
+    ) {}
+
+    static identity(): Matrix2D { return new Matrix2D(); }
+    static translation(x: number, y: number): Matrix2D { return new Matrix2D(1, 0, 0, 1, x, y); }
+    static rotation(angle: number): Matrix2D {
+        const c = cos(angle), s = sin(angle);
+        return new Matrix2D(c, s, -s, c, 0, 0);
+    }
+    static scaling(sx: number, sy: number = sx): Matrix2D { return new Matrix2D(sx, 0, 0, sy, 0, 0); }
+
+    clone(): Matrix2D { return new Matrix2D(this.a, this.b, this.c, this.d, this.tx, this.ty); }
+
+    multiply(m: Matrix2D): this {
+        const a = this.a * m.a + this.c * m.b;
+        const b = this.b * m.a + this.d * m.b;
+        const c = this.a * m.c + this.c * m.d;
+        const d = this.b * m.c + this.d * m.d;
+        const tx = this.a * m.tx + this.c * m.ty + this.tx;
+        const ty = this.b * m.tx + this.d * m.ty + this.ty;
+        this.a = a; this.b = b; this.c = c; this.d = d; this.tx = tx; this.ty = ty;
+        return this;
+    }
+
+    translate(x: number, y: number): this { return this.multiply(Matrix2D.translation(x, y)); }
+    rotate(angle: number): this { return this.multiply(Matrix2D.rotation(angle)); }
+    scale(sx: number, sy: number = sx): this { return this.multiply(Matrix2D.scaling(sx, sy)); }
+
+    transformPoint(x: number, y: number): Vector2 {
+        return new Vector2(this.a * x + this.c * y + this.tx, this.b * x + this.d * y + this.ty);
+    }
+
+    invert(): this {
+        const det = this.a * this.d - this.b * this.c;
+        if (det === 0) return this;
+        const invDet = 1 / det;
+        const a = this.d * invDet;
+        const b = -this.b * invDet;
+        const c = -this.c * invDet;
+        const d = this.a * invDet;
+        const tx = -(a * this.tx + c * this.ty);
+        const ty = -(b * this.tx + d * this.ty);
+        this.a = a; this.b = b; this.c = c; this.d = d; this.tx = tx; this.ty = ty;
+        return this;
+    }
+
+    toArray(): [number, number, number, number, number, number] {
+        return [this.a, this.b, this.c, this.d, this.tx, this.ty];
+    }
+}
