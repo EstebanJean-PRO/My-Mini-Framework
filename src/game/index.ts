@@ -8,3 +8,4 @@ export * from './entity';
 export * from './network';
 export * from './pool';
 export * from './assets';
+export * from './camera';
