@@ -167,7 +167,7 @@ export function registerEventHandler(
     eventType: string, 
     handler: (event: SyntheticEvent | Event) => void
 ): string {
-    const id = `event-${Date.now()}-${generateId()}`;
+    const id = `event-${generateId()}`;
     eventRegistry.set(id, { id, handler, eventType });
     initializeEventSystem();
     return id;
